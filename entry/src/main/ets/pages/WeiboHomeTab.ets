@@ -4,7 +4,8 @@ import { curves } from '@kit.ArkUI';
 import { ThreadCard, ThreadItemData, ThreadSharePayload, EmptyView, ErrorView } from '../components/CommonComponents';
 import { ThreadListSkeleton } from '../components/Skeleton';
 import { Breakpoint, CARD_COLUMNS_KEY, ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode, isLargeScreenForm, isWideFormDevice as detectWideFormDevice, overrideColumns, readColumnMode } from '../common/Theme';
-import { WeiboPost, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
+import { WeiboPost } from '../model/WeiboModel';
+import { FeedLoadState, FeedStore } from '../store/FeedStore';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService } from '../service/WeiboService';
 import { ShareUtil } from '../common/ShareUtil';
@@ -48,14 +49,6 @@ class WeiboPostDataSource implements IDataSource {
   }
 }
 
-enum TimelineState {
-  Idle = 0,
-  Loading = 1,
-  Success = 2,
-  Empty = 3,
-  Error = 4,
-}
-
 export enum WeiboTimelineMode {
   Recommend = 0,
   Following = 1,
@@ -63,9 +56,13 @@ export enum WeiboTimelineMode {
 
 type TabAnimationDirection = 'left' | 'right';
 
+/** 帖子卡片在窗口坐标系中的区域，用于定位阅读锚点。 */
+interface CardArea { y: number; h: number; }
+
 /**
  * TiebaPura 首页的信息层级与帖子卡片，数据仅来自微博只读适配层。
- * 这里特意不复用 HomeTab：该页的推荐、关注吧和互动回调均依赖贴吧协议。
+ * 推荐与关注两个信息流经 FeedStore 读取：缓存先上屏、网络后台刷新，
+ * 阅读位置以“帖子 ID＋相对偏移”持久化并在下次进入时恢复。
  */
 @Component
 export struct WeiboHomeTab {
@@ -79,18 +76,8 @@ export struct WeiboHomeTab {
   onOpenPost: (post: WeiboPost) => void = () => {};
   onOpenUserProfile: (userId: string, userName: string) => void = () => {};
   @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
-  private onPostEntitiesChanged(): void { this.posts = this.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post)); }
+  private onPostEntitiesChanged(): void { this.reapplyEntities(); }
   @State isDark: boolean = isDarkMode();
-  @State userIdDraft: string = '';
-  @State profile: WeiboUser | null = null;
-  @State @Watch('onPostsChange') posts: WeiboPost[] = [];
-  @State timelineState: TimelineState = TimelineState.Idle;
-  @State errorMessage: string = '';
-  @State currentPage: number = 1;
-  /** Desktop friends feed uses this opaque cursor rather than numbered pages. */
-  @State followingMaxId: string = '0';
-  @State loadingMore: boolean = false;
-  @State hasMore: boolean = true;
   @State viewportWidth: number = 0;
   @State viewportHeight: number = 0;
   @State pageTranslateX: number = 0;
@@ -105,55 +92,60 @@ export struct WeiboHomeTab {
   @StorageLink('weiboAuthTick') @Watch('onWeiboAuthTick') weiboAuthTick: number = 0;
   @StorageLink('columnMode') columnMode: number = 0;
   @StorageLink('columnModeTick') @Watch('onColumnModeTick') columnModeTick: number = 0;
+  /** 数据在 aboutToAppear 里按 mode 建立正确实例。 */
+  @State feed: FeedStore = new FeedStore('recommend');
+  /** 各卡片最新区域；滚动会持续触发 onAreaChange，这里的值始终接近实时。 */
+  private cardAreas: Map<string, CardArea> = new Map();
+  /** Scroll 视口在窗口坐标系中的顶边，作为锚点偏移的参照。 */
+  private scrollViewportY: number = 0;
+  /** 待恢复的锚点帖子 ID；其首次 onAreaChange 时应用一次滚动。 */
+  private positionRestoring: string = '';
+  private restoreRelative: number = 0;
 
   async aboutToAppear(): Promise<void> {
     // This runs beside local auth initialization; it does not transfer feed data.
     WeiboService.getInstance().preconnectTimeline();
     const context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
     await WeiboAuthManager.getInstance().init(context);
-    this.userIdDraft = WeiboAuthManager.getInstance().getTargetUserId();
+    this.feed = new FeedStore(this.mode === WeiboTimelineMode.Recommend ? 'recommend' : 'following');
     this.columnMode = readColumnMode();
     this.syncCardColumns();
-    if (this.mode === WeiboTimelineMode.Recommend || this.mode === WeiboTimelineMode.Following || this.userIdDraft.trim().length > 0) {
-      await this.loadFirstPage();
-    }
+    await this.loadFirstPage(false);
   }
 
-  private requestGeneration: number = 0;
-  private refreshing: boolean = false;
-  aboutToDisappear(): void { this.requestGeneration++; }
-  private isCurrent(generation: number, session: number): boolean {
-    return generation === this.requestGeneration && session === WeiboAuthManager.getInstance().getGeneration();
-  }
-  private uniquePosts(posts: WeiboPost[]): WeiboPost[] {
-    const ids: Set<string> = new Set();
-    return posts.filter((post: WeiboPost): boolean => {
-      if (post.id.length === 0 || ids.has(post.id)) { return false; }
-      ids.add(post.id); return true;
-    });
+  aboutToDisappear(): void {
+    this.saveReadingPosition();
+    this.feed.cancel();
   }
   private onDarkTick(): void {
     this.isDark = isDarkMode();
   }
 
   /** Mirrors TiebaPura's WaterFlow contract: page replacement reloads, pagination appends. */
-  private onPostsChange(): void {
+  private syncTimeline(): void {
     const previous: WeiboPost[] = this.timelineDataSource.data;
-    let isAppend: boolean = previous.length > 0 && this.posts.length > previous.length;
+    const next: WeiboPost[] = this.feed.posts;
+    let isAppend: boolean = previous.length > 0 && next.length > previous.length;
     if (isAppend) {
       for (let index: number = 0; index < previous.length; index++) {
-        if (previous[index].id !== this.posts[index].id) {
+        if (previous[index].id !== next[index].id) {
           isAppend = false;
           break;
         }
       }
     }
-    this.timelineDataSource.data = this.posts;
+    this.timelineDataSource.data = next;
     if (isAppend) {
       this.timelineDataSource.notifyAdd(previous.length);
     } else {
       this.timelineDataSource.reload();
     }
+  }
+
+  /** 跨页面互动状态（点赞等）变化后把实体层状态套回当前列表。 */
+  private reapplyEntities(): void {
+    this.feed.posts = this.feed.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post));
+    this.syncTimeline();
   }
 
   private onColumnModeTick(): void {
@@ -244,137 +236,77 @@ export struct WeiboHomeTab {
     setTimeout((): void => { this.isAnimating = false; }, 600);
   }
 
-  /** A successful in-app login happens on a routed page. Reload both retained
-   * timeline tabs when it returns so users do not have to recreate the page. */
+  /** 登录/退出后旧账户内容不再保留，立即按新身份重建信息流。 */
   private onWeiboAuthTick(): void {
-    // A refreshed account session can change the server's personalized feed.
-    // Keep current cards visible until its first fresh page replaces them.
-    this.posts = [];
-    this.loadFirstPage();
+    this.feed.reset();
+    this.syncTimeline();
+    this.loadFirstPage(false);
   }
 
   /**
-   * Pull-to-refresh keeps the current recommendation cards visible until the
-   * fresh first page arrives. Initial loading and explicit retry still use the
-   * full loading state.
+   * 首页读取：FeedStore 先展示本地缓存（含上次阅读位置），再后台刷新替换。
+   * explicit 表示用户主动加载/重试；已有内容时失败以 Toast 提示，不清空页面。
    */
-  private async loadFirstPage(preserveCurrentContent: boolean = false): Promise<void> {
-    const generation: number = ++this.requestGeneration;
-    const session: number = WeiboAuthManager.getInstance().getGeneration();
-    this.loadingMore = false;
-    this.refreshing = true;
-    try {
-    if (this.mode === WeiboTimelineMode.Recommend || this.mode === WeiboTimelineMode.Following) {
-      const keepCurrentContent: boolean = preserveCurrentContent
-        && this.timelineState === TimelineState.Success
-        && this.posts.length > 0;
-      if (!keepCurrentContent) {
-        this.timelineState = TimelineState.Loading;
-      }
-      this.errorMessage = '';
-      try {
-        let result: WeiboPost[] = [];
-        let more: boolean = false;
-        if (this.mode === WeiboTimelineMode.Recommend) {
-          result = await WeiboService.getInstance().fetchRecommendTimeline(1);
-          more = result.length > 0;
-        } else {
-          const followingPage: WeiboTimelinePage = await WeiboService.getInstance().fetchFollowingTimeline('0');
-          if (!this.isCurrent(generation, session)) { return; }
-          result = followingPage.items;
-          this.followingMaxId = followingPage.nextMaxId;
-          more = followingPage.hasMore;
-        }
-        if (!this.isCurrent(generation, session)) { return; }
-      this.posts = this.uniquePosts(result);
-        this.currentPage = 1;
-        this.hasMore = more;
-        this.timelineState = result.length > 0 ? TimelineState.Success : TimelineState.Empty;
-      } catch (error) {
-      if (!this.isCurrent(generation, session)) { return; }
-        this.errorMessage = (error as Error).message ?? '推荐微博加载失败，请稍后重试';
-        if (keepCurrentContent) {
-          this.getUIContext().getPromptAction().showToast({ message: this.errorMessage });
-          return;
-        }
-        this.posts = [];
-        this.timelineState = TimelineState.Error;
-      }
-      return;
+  private async loadFirstPage(explicit: boolean): Promise<void> {
+    await this.feed.loadFirst(explicit);
+    this.syncTimeline();
+    this.beginPositionRestore();
+    if (explicit && this.feed.posts.length > 0 && this.feed.errorMessage.length > 0) {
+      this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
     }
-    const userId: string = this.userIdDraft.trim();
-    if (userId.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_missing_user_id') });
-      return;
-    }
-    this.timelineState = TimelineState.Loading;
-    this.errorMessage = '';
-    try {
-      await WeiboAuthManager.getInstance().setTargetUserId(userId);
-      const service: WeiboService = WeiboService.getInstance();
-      const profile: WeiboUser = await service.fetchUserProfile(userId);
-      if (!this.isCurrent(generation, session)) { return; }
-      this.profile = profile;
-      const result: WeiboPost[] = await service.fetchUserTimeline(userId, 1);
-      if (!this.isCurrent(generation, session)) { return; }
-      this.posts = this.uniquePosts(result);
-      this.currentPage = 1;
-      this.hasMore = result.length > 0;
-      this.timelineState = result.length > 0 ? TimelineState.Success : TimelineState.Empty;
-    } catch (error) {
-      if (!this.isCurrent(generation, session)) { return; }
-      this.profile = null;
-      this.posts = [];
-      this.errorMessage = (error as Error).message ?? '微博加载失败，请稍后重试';
-      this.timelineState = TimelineState.Error;
-    }
-    } finally { if (this.isCurrent(generation, session)) { this.refreshing = false; } }
   }
 
   private async loadMore(): Promise<void> {
-    if (this.refreshing || this.loadingMore || !this.hasMore || this.timelineState !== TimelineState.Success) {
+    await this.feed.loadMore();
+    this.syncTimeline();
+    if (this.feed.errorMessage.length > 0 && this.feed.posts.length > 0) {
+      this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
+      this.feed.errorMessage = '';
+    }
+  }
+
+  /** 缓存恢复后记录待恢复锚点，由锚点卡片的首次 onAreaChange 触发滚动。 */
+  private beginPositionRestore(): void {
+    if (this.feed.pendingAnchorId.length === 0) { return; }
+    if (this.feed.state !== FeedLoadState.Success) {
+      this.feed.pendingAnchorId = '';
       return;
     }
-    const userId: string = this.userIdDraft.trim();
-    if (this.mode !== WeiboTimelineMode.Recommend && this.mode !== WeiboTimelineMode.Following && userId.length === 0) {
-      return;
+    this.positionRestoring = this.feed.pendingAnchorId;
+    this.restoreRelative = this.feed.pendingAnchorOffset;
+    this.feed.pendingAnchorId = '';
+  }
+
+  private onCardAreaChange(post: WeiboPost, newValue: Area): void {
+    this.cardAreas.set(post.id, { y: newValue.globalPosition.y as number, h: newValue.height as number });
+    if (this.positionRestoring.length > 0 && this.positionRestoring === post.id) {
+      this.applyRestoredPosition();
     }
-    const generation: number = this.requestGeneration;
-    const session: number = WeiboAuthManager.getInstance().getGeneration();
-    this.loadingMore = true;
-    try {
-      const nextPage: number = this.currentPage + 1;
-      let result: WeiboPost[] = [];
-      let more: boolean = false;
-      if (this.mode === WeiboTimelineMode.Recommend) {
-        result = await WeiboService.getInstance().fetchRecommendTimeline(nextPage);
-        more = result.length > 0;
-      } else if (this.mode === WeiboTimelineMode.Following) {
-        const followingPage: WeiboTimelinePage = await WeiboService.getInstance()
-          .fetchFollowingTimeline(this.followingMaxId);
-        if (!this.isCurrent(generation, session)) { return; }
-        result = followingPage.items;
-        this.followingMaxId = followingPage.nextMaxId;
-        more = followingPage.hasMore;
-      } else {
-        result = await WeiboService.getInstance().fetchUserTimeline(userId, nextPage);
-        more = result.length > 0;
+  }
+
+  /** 把锚点卡片顶边放回上次保存的视口相对偏移处；公式在保存点为不动点。 */
+  private applyRestoredPosition(): void {
+    const anchorId: string = this.positionRestoring;
+    this.positionRestoring = '';
+    const area: CardArea | undefined = this.cardAreas.get(anchorId);
+    if (area === undefined) { return; }
+    const targetY: number = this.scrollViewportY + this.restoreRelative;
+    const currentY: number = this.timelineScroller.currentOffset().yOffset;
+    this.timelineScroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, currentY + area.y - targetY) });
+  }
+
+  /** 滚动停止/页面销毁时保存阅读位置：第一个底边越过视口顶边的帖子即锚点。 */
+  private saveReadingPosition(): void {
+    if (this.positionRestoring.length > 0) { return; }
+    if (this.feed.state !== FeedLoadState.Success || this.feed.posts.length === 0) { return; }
+    const posts: WeiboPost[] = this.feed.posts;
+    for (let index: number = 0; index < posts.length; index++) {
+      const area: CardArea | undefined = this.cardAreas.get(posts[index].id);
+      if (area === undefined) { continue; }
+      if (area.y + area.h > this.scrollViewportY) {
+        this.feed.savePosition(posts[index].id, area.y - this.scrollViewportY);
+        return;
       }
-      if (!this.isCurrent(generation, session)) { return; }
-      if (result.length > 0) {
-        this.posts = this.uniquePosts(this.posts.concat(result));
-        this.currentPage = nextPage;
-        this.hasMore = more;
-      } else {
-        this.hasMore = false;
-        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_empty') });
-      }
-    } catch (error) {
-      if (!this.isCurrent(generation, session)) { return; }
-      this.errorMessage = (error as Error).message ?? '微博加载失败，请稍后重试';
-      this.getUIContext().getPromptAction().showToast({ message: this.errorMessage });
-    } finally {
-      if (this.isCurrent(generation, session)) { this.loadingMore = false; }
     }
   }
 
@@ -445,12 +377,7 @@ export struct WeiboHomeTab {
   private async toggleLike(post: WeiboPost, liked: boolean): Promise<void> {
     try {
       await WeiboService.getInstance().setLike(post.id, liked);
-      const updated: WeiboPost[] = [];
-      for (let index: number = 0; index < this.posts.length; index++) {
-        const item: WeiboPost = this.posts[index];
-        updated.push(item.id === post.id ? PostEntities.shared().apply(item) : item);
-      }
-      this.posts = updated;
+      // 点赞状态经 PostEntities 广播（postTick），onPostEntitiesChanged 负责套回列表
       this.getUIContext().getPromptAction().showToast({
         message: liked ? $r('app.string.weibo_like_success') : $r('app.string.weibo_unlike_success')
       });
@@ -485,16 +412,9 @@ export struct WeiboHomeTab {
           .backgroundEffect(ImmBlur.accent())
           .systemMaterial(ImmMaterial.accent(this.isDark))
           .borderRadius(Radius.full)
-          .onClick(() => { this.loadFirstPage(); })
+          .onClick(() => { this.loadFirstPage(true); })
       }
       .width('100%')
-      if (this.profile !== null) {
-        Text(`${this.profile.screenName} · ${this.profile.followersCount} 粉丝 · ${this.profile.statusesCount} 微博`)
-          .width('100%')
-          .fontSize(fs(12, this.fontScale))
-          .fontColor(Theme.textSecondary(this.isDark))
-          .maxLines(1)
-      }
     }
     .width('100%')
     .padding({ top: 52, left: Spacing.lg, right: Spacing.lg, bottom: Spacing.md })
@@ -517,7 +437,7 @@ export struct WeiboHomeTab {
 
   @Builder
   LoadMoreButton(): void {
-    Button(this.loadingMore ? $r('app.string.weibo_loading') : $r('app.string.weibo_timeline_load_more'))
+    Button(this.feed.loadingMore ? $r('app.string.weibo_loading') : $r('app.string.weibo_timeline_load_more'))
       .width('100%')
       .height(42)
       .fontSize(fs(13, this.fontScale))
@@ -540,6 +460,7 @@ export struct WeiboHomeTab {
           this.PostCard(post)
         }
         .width('100%')
+        .onAreaChange((_oldValue: Area, newValue: Area): void => { this.onCardAreaChange(post, newValue); })
       }, (post: WeiboPost): string => post.id)
     }
     .columnsTemplate(this.waterfallColumnsTemplate())
@@ -552,13 +473,13 @@ export struct WeiboHomeTab {
 
   @Builder
   Timeline() {
-    if (this.timelineState === TimelineState.Loading) {
+    if (this.feed.state === FeedLoadState.Loading) {
       ThreadListSkeleton({ count: 4 })
         .margin({ top: Spacing.md })
-    } else if (this.timelineState === TimelineState.Error) {
-      ErrorView({ message: this.errorMessage, onRetry: (): void => { this.loadFirstPage(); } })
+    } else if (this.feed.state === FeedLoadState.Error) {
+      ErrorView({ message: this.feed.errorMessage, onRetry: (): void => { this.loadFirstPage(true); } })
         .height('65%')
-    } else if (this.timelineState === TimelineState.Empty) {
+    } else if (this.feed.state === FeedLoadState.Empty) {
       EmptyView({
         message: this.mode === WeiboTimelineMode.Following
           ? $r('app.string.weibo_following_empty')
@@ -566,12 +487,16 @@ export struct WeiboHomeTab {
         icon: '○'
       })
         .height('65%')
-    } else if (this.timelineState === TimelineState.Success) {
+    } else if (this.feed.state === FeedLoadState.Success) {
       Column({ space: Spacing.md }) {
-        ForEach(this.posts, (post: WeiboPost): void => {
-          this.PostCard(post)
+        ForEach(this.feed.posts, (post: WeiboPost): void => {
+          Column() {
+            this.PostCard(post)
+          }
+          .width('100%')
+          .onAreaChange((_oldValue: Area, newValue: Area): void => { this.onCardAreaChange(post, newValue); })
         }, (post: WeiboPost): string => post.id)
-        if (this.hasMore) {
+        if (this.feed.hasMore) {
           this.LoadMoreButton()
         }
       }
@@ -587,7 +512,7 @@ export struct WeiboHomeTab {
   TimelineScroller() {
     Scroll(this.timelineScroller) {
       Column() {
-        if (this.timelineState === TimelineState.Success && this.waterfallColumns() > 1) {
+        if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
           this.WaterfallTimeline()
         } else {
           this.Timeline()
@@ -601,8 +526,14 @@ export struct WeiboHomeTab {
     .height('100%')
     .scrollBar(BarState.Off)
     .edgeEffect(EdgeEffect.Spring)
+    .onAreaChange((_oldValue: Area, newValue: Area): void => {
+      this.scrollViewportY = newValue.globalPosition.y as number;
+    })
+    .onScrollStop((): void => {
+      this.saveReadingPosition();
+    })
     .onReachEnd((): void => {
-      if (this.timelineState === TimelineState.Success && this.waterfallColumns() > 1) {
+      if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
         this.loadMore();
       }
     })

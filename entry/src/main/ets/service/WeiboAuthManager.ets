@@ -1,9 +1,13 @@
 import { common } from '@kit.AbilityKit';
 import { webview } from '@kit.ArkWeb';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CacheManager } from '../cache/CacheManager';
 import { CredentialVault, StoredSession } from './CredentialVault';
 import { WeiboHttpClient } from '../network/WeiboHttpClient';
 import { WeiboVisitorSession } from './WeiboVisitorSession';
+import { ReaderDatabase } from '../storage/ReaderDatabase';
+
+const TAG: string = 'WeiboAuthManager';
 
 interface AccountConfigData { login?: boolean; uid?: string | number; }
 interface AccountConfig { ok?: number; data?: AccountConfigData; msg?: string; }
@@ -68,9 +72,20 @@ export class WeiboAuthManager {
     this.notifyUi();
   }
   async logout(): Promise<void> {
+    const account: string = this.session.uid;
     this.invalidate();
     this.session = { mobile: '', desktop: '', uid: '' };
     this.notifyUi();
+    // 先失效会话再清理本地数据；阅读缓存按账户隔离，清理失败仅告警，
+    // 不阻断后续凭据与 Web 登录态的严格清理。
+    if (account.length > 0) {
+      try {
+        await ReaderDatabase.shared().clearAccount(account);
+      } catch (error) {
+        hilog.warn(0x0000, TAG, 'clearAccount reading cache failed uid=%{public}s err=%{public}s',
+          account, JSON.stringify(error));
+      }
+    }
     try { await this.vault.clear(); }
     finally { await webview.WebCookieManager.clearAllCookies(); }
   }

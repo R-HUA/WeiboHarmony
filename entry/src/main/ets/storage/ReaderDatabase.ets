@@ -30,7 +30,13 @@ export class ReaderDatabase {
   private store(): relationalStore.RdbStore {
     if (this.db === null) { throw new Error('阅读数据库尚未初始化'); } return this.db;
   }
+  /** 等待共享初始化完成；未初始化或初始化失败都让调用方按缺省路径处理。 */
+  private async ready(): Promise<void> {
+    if (this.initialization === null) { throw new Error('阅读数据库尚未初始化'); }
+    await this.initialization;
+  }
   async loadFeed(account: string, feed: string): Promise<CachedFeed> {
+    await this.ready();
     const result: CachedFeed = { posts: [], cursor: null, anchorId: '', offset: 0 };
     const rows: relationalStore.ResultSet = await this.store().querySql('SELECT p.body FROM feed_order f JOIN posts p ON p.account=f.account AND p.id=f.id WHERE f.account=? AND f.feed=? AND p.fetched>=? ORDER BY f.rank LIMIT 500', [account, feed, Date.now() - MAX_AGE]);
     try { while (rows.goToNextRow()) { result.posts.push(JSON.parse(rows.getString(0)) as WeiboPost); } }
@@ -46,6 +52,7 @@ export class ReaderDatabase {
   }
   saveFeed(account: string, feed: string, posts: WeiboPost[], cursor: string | null, current: () => boolean): Promise<void> {
     return this.writes.enqueue<void>(async (): Promise<void> => {
+      await this.ready();
       if (!current()) { return; }
       const tx: relationalStore.Transaction = await this.store().createTransaction();
       try {
@@ -65,12 +72,15 @@ export class ReaderDatabase {
   }
   savePosition(account: string, feed: string, id: string, offset: number): Promise<void> {
     return this.writes.enqueue<void>(async (): Promise<void> => {
+      await this.ready();
       await this.store().executeSql('INSERT INTO feed_meta(account,feed,anchor,offset) VALUES(?,?,?,?) ON CONFLICT(account,feed) DO UPDATE SET anchor=excluded.anchor,offset=excluded.offset', [account,feed,id,offset]);
     });
   }
   async clearAccount(account: string): Promise<void> {
-    if (this.db === null) { return; }
+    // 从未初始化说明本会话没有可清理的数据，直接返回
+    if (this.initialization === null) { return; }
     await this.writes.enqueue<void>(async (): Promise<void> => {
+      await this.ready();
       const tx: relationalStore.Transaction = await this.store().createTransaction();
       try {
         for (const table of ['posts','feed_order','feed_meta','local_data']) {

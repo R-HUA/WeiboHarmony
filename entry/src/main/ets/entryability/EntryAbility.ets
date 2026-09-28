@@ -26,6 +26,7 @@ import { CacheManager, STORE_NAME } from '../cache/CacheManager';
 import { CACHE_KEY } from '../common/Constants';
 import { AppSettingsStore } from '../service/AppSettingsStore';
 import { WEIBO_BREAKPOINT_KEY, WeiboResponsiveLayout } from '../common/WeiboNavigationLayout';
+import { ReaderDatabase } from '../storage/ReaderDatabase';
 
 const TAG: string = 'EntryAbility';
 const STATUS_BAR_HEIGHT_KEY: string = 'weibo.status_bar_height';
@@ -46,6 +47,11 @@ export default class EntryAbility extends UIAbility {
     // 渲染（极短一次"闪烁"），随后 Configuration 同步，UI 自动按新档翻档。
     try {
       const ctx: common.UIAbilityContext = this.context;
+      // 阅读缓存库在首帧前启动初始化：首页 aboutToAppear 的首次读取与退出登录的账户清理都依赖它就绪。
+      // 失败只降级离线缓存能力（读走网络、清理告警），不阻断启动。
+      ReaderDatabase.shared().init(ctx).catch((e: Error): void => {
+        hilog.error(0x0000, TAG, 'ReaderDatabase init failed: %{public}s', JSON.stringify(e));
+      });
       Promise.resolve().then(async () => {
         try {
           const cache = CacheManager.getInstance();
