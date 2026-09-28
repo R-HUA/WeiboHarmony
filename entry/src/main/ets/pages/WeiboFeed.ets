@@ -574,7 +574,8 @@ export struct WeiboFeed {
           .width('100%')
       }
       if (repost.pictures.length > 0) {
-        this.PictureGrid(repost.pictures)
+        // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
+        this.PictureGrid(repost.previewPictures ?? repost.pictures)
       }
     }
     .width('100%')
@@ -615,7 +616,8 @@ export struct WeiboFeed {
         .width('100%')
       this.VideoPlayer(post)
       if (post.pictures.length > 0) {
-        this.PictureGrid(post.pictures)
+        // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
+        this.PictureGrid(post.previewPictures ?? post.pictures)
       }
       if (post.repost !== null) {
         this.RepostSummary(post.repost)

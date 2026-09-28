@@ -27,6 +27,7 @@ export class PostEntities {
       userAvatar: post.userAvatar,
       text: post.text,
       pictures: post.pictures,
+      previewPictures: post.previewPictures,
       videoUrl: post.videoUrl,
       videoCoverUrl: post.videoCoverUrl,
       createdAt: post.createdAt,

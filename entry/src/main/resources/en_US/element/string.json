@@ -56,9 +56,6 @@
     { "name": "weibo_software_about_interaction_title", "value": "You control every interaction" },
     { "name": "weibo_software_about_interaction_description", "value": "Likes, comments, and other actions are sent only after you explicitly tap them." },
     { "name": "weibo_software_about_support_title", "value": "Support the developer" },
-    { "name": "weibo_software_about_support_description", "value": "Development and maintenance take continued time and care. If this app helps you, voluntary support is welcome; thank you for using it either way." },
-    { "name": "weibo_software_about_support_scan", "value": "Scan either QR code below with WeChat or Alipay to show your support." },
-    { "name": "weibo_software_about_wechat", "value": "WeChat Pay" },
-    { "name": "weibo_software_about_alipay", "value": "Alipay" }
+    { "name": "weibo_software_about_support_description", "value": "Development and maintenance take continued time and care. If this app helps you, voluntary support is welcome; thank you for using it either way." }
   ]
 }

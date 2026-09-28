@@ -1,35 +1,6 @@
 import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 import { ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode } from '../common/Theme';
 
-@Component
-struct DonationQrCard {
-  @Prop title: Resource = $r('app.string.weibo_software_about_wechat');
-  @Prop image: Resource = $r('app.media.support_wechat');
-  @Prop imageHeight: number = 360;
-  @Prop isDark: boolean = false;
-  @Prop fontScale: number = 1.0;
-
-  build() {
-    Column({ space: Spacing.sm }) {
-      Text(this.title)
-        .width('100%')
-        .fontSize(fs(16, this.fontScale))
-        .fontWeight(FontWeight.Medium)
-        .fontColor(Theme.textPrimary(this.isDark))
-      Image(this.image)
-        .width('100%')
-        .height(this.imageHeight)
-        .objectFit(ImageFit.Contain)
-        .borderRadius(Radius.md)
-        .clip(true)
-    }
-    .width('100%')
-    .padding(Spacing.lg)
-    .backgroundColor(Theme.bgCard(this.isDark))
-    .borderRadius(Radius.lg)
-  }
-}
-
 @Entry
 @Component
 export struct AboutSoftware {
@@ -122,30 +93,11 @@ export struct AboutSoftware {
               .fontSize(fs(14, this.fontScale))
               .lineHeight(fs(21, this.fontScale))
               .fontColor(Theme.textSecondary(this.isDark))
-            Text($r('app.string.weibo_software_about_support_scan'))
-              .width('100%')
-              .fontSize(fs(13, this.fontScale))
-              .fontColor(Theme.textSecondary(this.isDark))
           }
           .width('100%')
           .padding(Spacing.lg)
           .backgroundColor(Theme.bgCard(this.isDark))
           .borderRadius(Radius.lg)
-
-          DonationQrCard({
-            title: $r('app.string.weibo_software_about_wechat'),
-            image: $r('app.media.support_wechat'),
-            imageHeight: 360,
-            isDark: this.isDark,
-            fontScale: this.fontScale
-          })
-          DonationQrCard({
-            title: $r('app.string.weibo_software_about_alipay'),
-            image: $r('app.media.support_alipay'),
-            imageHeight: 440,
-            isDark: this.isDark,
-            fontScale: this.fontScale
-          })
         }
         .width('100%')
         .padding({ left: Spacing.lg, right: Spacing.lg, top: this.contentTopInset(), bottom: 100 })

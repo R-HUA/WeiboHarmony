@@ -423,18 +423,6 @@
     {
       "name": "weibo_software_about_support_description",
       "value": "开发与维护需要持续投入时间和精力。若应用对你有帮助，欢迎自愿赞助；无论是否赞助，都感谢你的使用。"
-    },
-    {
-      "name": "weibo_software_about_support_scan",
-      "value": "使用微信或支付宝扫描下方二维码即可支持。"
-    },
-    {
-      "name": "weibo_software_about_wechat",
-      "value": "微信支付"
-    },
-    {
-      "name": "weibo_software_about_alipay",
-      "value": "支付宝"
     }
   ]
 }

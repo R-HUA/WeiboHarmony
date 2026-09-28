@@ -94,6 +94,8 @@ export struct WeiboHomeTab {
   @StorageLink('columnModeTick') @Watch('onColumnModeTick') columnModeTick: number = 0;
   /** 数据在 aboutToAppear 里按 mode 建立正确实例。 */
   @State feed: FeedStore = new FeedStore('recommend');
+  /** 下拉刷新指示；由 Refresh 组件经 $$ 双向绑定驱动。 */
+  @State pullRefreshing: boolean = false;
   /** 各卡片最新区域；滚动会持续触发 onAreaChange，这里的值始终接近实时。 */
   private cardAreas: Map<string, CardArea> = new Map();
   /** Scroll 视口在窗口坐标系中的顶边，作为锚点偏移的参照。 */
@@ -245,14 +247,19 @@ export struct WeiboHomeTab {
 
   /**
    * 首页读取：FeedStore 先展示本地缓存（含上次阅读位置），再后台刷新替换。
-   * explicit 表示用户主动加载/重试；已有内容时失败以 Toast 提示，不清空页面。
+   * explicit 表示用户主动加载/重试/下拉刷新；已有内容时失败以 Toast 提示，不清空页面。
    */
   private async loadFirstPage(explicit: boolean): Promise<void> {
-    await this.feed.loadFirst(explicit);
-    this.syncTimeline();
-    this.beginPositionRestore();
-    if (explicit && this.feed.posts.length > 0 && this.feed.errorMessage.length > 0) {
-      this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
+    try {
+      await this.feed.loadFirst(explicit);
+      this.syncTimeline();
+      this.beginPositionRestore();
+      if (explicit && this.feed.posts.length > 0 && this.feed.errorMessage.length > 0) {
+        this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
+      }
+    } finally {
+      // 下拉刷新指示只在显式刷新任务结束后收起，包括失败路径
+      if (explicit) { this.pullRefreshing = false; }
     }
   }
 
@@ -430,7 +437,10 @@ export struct WeiboHomeTab {
       onLike: (_id: string, _postId: string, liked: boolean): void => { this.toggleLike(post, liked); },
       onShare: (data: ThreadSharePayload): void => { this.onShare(data); },
       onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },
-      onImageTap: (urls: string[], index: number): void => { this.openImagePreview(urls, index); },
+      onImageTap: (_urls: string[], index: number): void => {
+        // 预览使用高清档；卡片展示用的是 wap720 中图
+        this.openImagePreview(post.previewPictures ?? post.pictures, index);
+      },
       skipImageCache: true
     })
   }
@@ -510,33 +520,41 @@ export struct WeiboHomeTab {
   /** PaperTalk-style page scroll: Scroll owns the viewport; WaterFlow is a direct content block. */
   @Builder
   TimelineScroller() {
-    Scroll(this.timelineScroller) {
-      Column() {
-        if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
-          this.WaterfallTimeline()
-        } else {
-          this.Timeline()
+    // 下拉刷新看新内容：显式刷新保留当前卡片，新首页到达后原位替换
+    Refresh({ refreshing: $$this.pullRefreshing }) {
+      Scroll(this.timelineScroller) {
+        Column() {
+          if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
+            this.WaterfallTimeline()
+          } else {
+            this.Timeline()
+          }
         }
+        .width('100%')
+        .padding({ left: Spacing.lg, right: Spacing.lg, top: this.topInset, bottom: this.bottomInset })
       }
+      .layoutWeight(1)
       .width('100%')
-      .padding({ left: Spacing.lg, right: Spacing.lg, top: this.topInset, bottom: this.bottomInset })
+      .height('100%')
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
+      .onAreaChange((_oldValue: Area, newValue: Area): void => {
+        this.scrollViewportY = newValue.globalPosition.y as number;
+      })
+      .onScrollStop((): void => {
+        this.saveReadingPosition();
+      })
+      .onReachEnd((): void => {
+        if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
+          this.loadMore();
+        }
+      })
     }
+    .onRefreshing((): void => { this.loadFirstPage(true); })
+    .pullToRefresh(true)
+    .refreshOffset(64)
     .layoutWeight(1)
     .width('100%')
-    .height('100%')
-    .scrollBar(BarState.Off)
-    .edgeEffect(EdgeEffect.Spring)
-    .onAreaChange((_oldValue: Area, newValue: Area): void => {
-      this.scrollViewportY = newValue.globalPosition.y as number;
-    })
-    .onScrollStop((): void => {
-      this.saveReadingPosition();
-    })
-    .onReachEnd((): void => {
-      if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
-        this.loadMore();
-      }
-    })
   }
 
   /** Same alpha-mask used by TiebaPura's HomeTab: content fades when it enters the floating title area. */

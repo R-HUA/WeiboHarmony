@@ -30,7 +30,10 @@ export interface WeiboPost {
   userName: string;
   userAvatar: string;
   text: string;
+  /** 列表展示档：微博图床按路径尺寸段改写为 wap720 中图，避免原图过大加载失败。 */
   pictures: string[];
+  /** 高清档：保留接口原始最高画质地址，供详情与原图预览使用。 */
+  previewPictures?: string[];
   /** A directly playable MP4 stream supplied by the mobile status endpoint. */
   videoUrl: string;
   /** Poster image for the video stream; used while the player is preparing. */

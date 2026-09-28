@@ -85,6 +85,26 @@ export interface WeiboPictureJson {
   original?: WeiboPictureSizeJson;
 }
 
+/** 桌面端接口（关注流 friendstimeline）pic_infos 字典项：单图多档尺寸。 */
+export interface WeiboDesktopPicJson {
+  thumbnail?: WeiboPictureSizeJson;
+  bmiddle?: WeiboPictureSizeJson;
+  large?: WeiboPictureSizeJson;
+  largest?: WeiboPictureSizeJson;
+  mw2000?: WeiboPictureSizeJson;
+  original?: WeiboPictureSizeJson;
+}
+
+/** 桌面端 mixed_media_info.media_list 列表项；图文混排时有序承载图片。 */
+export interface WeiboMixedMediaJson {
+  type?: string;
+  pic_info?: WeiboDesktopPicJson;
+}
+
+export interface WeiboMixedMediaInfoJson {
+  media_list?: WeiboMixedMediaJson[];
+}
+
 export interface WeiboPictureSizeJson {
   url?: string;
 }
@@ -105,10 +125,18 @@ export interface WeiboVideoMediaInfoJson {
   stream_url_h5?: string;
   mp4_hd_mp4?: string;
   mp4_720p_mp4?: string;
+  /** 桌面端部分版本把视频封面图放在 media_info.image。 */
+  image?: string;
 }
 
 export interface WeiboPagePictureJson {
   url?: string;
+}
+
+/** 桌面端视频卡片的封面档位（pic_info.pic_big / pic_small）。 */
+export interface WeiboPagePicInfoJson {
+  pic_big?: WeiboPagePictureJson;
+  pic_small?: WeiboPagePictureJson;
 }
 
 export interface WeiboPageInfoJson {
@@ -116,6 +144,7 @@ export interface WeiboPageInfoJson {
   urls?: WeiboVideoUrlsJson;
   media_info?: WeiboVideoMediaInfoJson;
   page_pic?: WeiboPagePictureJson;
+  pic_info?: WeiboPagePicInfoJson;
 }
 
 export interface WeiboPostJson {
@@ -133,9 +162,15 @@ export interface WeiboPostJson {
   attitudes_status?: number;
   user?: WeiboUserJson;
   pics?: WeiboPictureJson[];
+  /** 桌面端关注流的图片字典；键为图片 ID，无序。 */
+  pic_infos?: Record<string, WeiboDesktopPicJson>;
+  /** 桌面端图文混排列表；有序，优先于 pic_infos 消费。 */
+  mixed_media_info?: WeiboMixedMediaInfoJson;
   page_info?: WeiboPageInfoJson;
   video_url?: string;
   thumbnail_pic?: string;
+  /** 桌面端 status 顶层的中间档图片地址，视频帖常以此作封面兜底。 */
+  bmiddle_pic?: string;
   retweeted_status?: WeiboPostJson;
 }
 

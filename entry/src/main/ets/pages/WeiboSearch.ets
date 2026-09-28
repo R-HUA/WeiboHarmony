@@ -197,7 +197,10 @@ export struct WeiboSearch {
                 onTap: (_id: string): void => { this.openPost(post); },
                 onComment: (_id: string): void => { this.openPost(post); },
                 onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },
-                onImageTap: (urls: string[], index: number): void => { this.openImagePreview(urls, index); },
+                onImageTap: (_urls: string[], index: number): void => {
+                  // 预览使用高清档；卡片展示用的是 wap720 中图
+                  this.openImagePreview(post.previewPictures ?? post.pictures, index);
+                },
                 skipImageCache: true,
               })
             }, (post: WeiboPost): string => post.id)

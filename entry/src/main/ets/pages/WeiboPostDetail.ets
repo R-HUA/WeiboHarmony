@@ -639,7 +639,8 @@ export struct WeiboPostDetail {
         .fontColor(Theme.textPrimary(this.isDark))
         .width('100%')
       if (repost.pictures.length > 0) {
-        this.PictureGrid(repost.pictures)
+        // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
+        this.PictureGrid(repost.previewPictures ?? repost.pictures)
       }
     }
     .width('100%')
@@ -692,7 +693,8 @@ export struct WeiboPostDetail {
         .width('100%')
       this.VideoPlayer(currentPost)
       if (currentPost.pictures.length > 0) {
-        this.PictureGrid(currentPost.pictures)
+        // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
+        this.PictureGrid(currentPost.previewPictures ?? currentPost.pictures)
       }
       if (currentPost.repost !== null) {
         this.RepostCard(currentPost.repost)
