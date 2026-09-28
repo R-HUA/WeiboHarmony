@@ -208,6 +208,7 @@ struct Index {
   }
 
   private onWeiboAuthTick(): void {
+    this.accountLoading = false; this.accountProfile = null;
     this.refreshWeiboAccount();
     if (this.selectedTab === WeiboTab.Mine) {
       this.loadAccountProfile();
@@ -226,13 +227,17 @@ struct Index {
       }
       return;
     }
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     this.accountLoading = true;
     try {
-      this.accountProfile = await WeiboService.getInstance().fetchCurrentUserProfile();
+      const account: WeiboUser = await WeiboService.getInstance().fetchCurrentUserProfile();
+      if (session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      this.accountProfile = account;
     } catch (error) {
+      if (session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.accountProfile = null;
     } finally {
-      this.accountLoading = false;
+      if (session === WeiboAuthManager.getInstance().getGeneration()) { this.accountLoading = false; }
     }
   }
 

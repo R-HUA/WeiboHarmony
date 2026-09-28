@@ -1,3 +1,4 @@
+import { PostEntities } from '../store/PostEntities';
 import { common } from '@kit.AbilityKit';
 import { curves } from '@kit.ArkUI';
 import { WeiboComment, WeiboPost, WeiboUser } from '../model/WeiboModel';
@@ -29,11 +30,17 @@ export function WeiboPostDetailBuilder(): void {
 
 @Component
 export struct WeiboPostDetail {
+  @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
+  private onPostEntitiesChanged(): void { if (this.post !== null) { this.post = PostEntities.shared().apply(this.post); } }
   @State isDark: boolean = isDarkMode();
   @State postId: string = '';
   @State post: WeiboPost | null = null;
   @State comments: WeiboComment[] = [];
   @State loading: boolean = true;
+  @State commentsPage: number = 1;
+  @State commentsHasMore: boolean = true;
+  private commentsRevision: number = 0;
+  private viewRevision: number = 0;
   @State commentsLoading: boolean = false;
   @State errorMessage: string = '';
   @State commentDraft: string = '';
@@ -73,6 +80,8 @@ export struct WeiboPostDetail {
   }
 
   aboutToDisappear(): void {
+    this.viewRevision++; this.commentsRevision++;
+    try { this.videoController.pause(); } catch (error) {}
     this.unregisterGesturesShare();
   }
 
@@ -105,6 +114,10 @@ export struct WeiboPostDetail {
   }
 
   private onWeiboAuthTick(): void {
+    this.viewRevision++; this.commentsRevision++;
+    this.post = null; this.comments = []; this.commentDraft = '';
+    this.commentsLoading = false; this.commentSending = false;
+    this.errorMessage = '登录状态已改变，请返回列表重新打开';
     this.loadCurrentAccountProfile();
   }
 
@@ -115,11 +128,15 @@ export struct WeiboPostDetail {
       this.accountName = '';
       return;
     }
+    const revision: number = this.viewRevision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     try {
       const account: WeiboUser = await WeiboService.getInstance().fetchCurrentUserProfile();
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.accountAvatarUrl = account.avatarUrl;
       this.accountName = account.screenName;
     } catch (error) {
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.accountAvatarUrl = '';
       this.accountName = '';
     }
@@ -131,15 +148,20 @@ export struct WeiboPostDetail {
     this.contentOpacity = 0;
     this.contentTranslateY = 18;
     this.contentScale = 0.985;
+    const revision: number = this.viewRevision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     try {
-      this.post = await WeiboService.getInstance().fetchPost(this.postId);
+      const post: WeiboPost = await WeiboService.getInstance().fetchPost(this.postId);
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      this.post = post;
       this.presentPostContent();
       await this.prepareGestureSharePreview();
       await this.loadComments();
     } catch (error) {
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.errorMessage = (error as Error).message ?? '帖子详情加载失败，请稍后重试';
     } finally {
-      this.loading = false;
+      if (revision === this.viewRevision && session === WeiboAuthManager.getInstance().getGeneration()) { this.loading = false; }
     }
   }
 
@@ -156,40 +178,28 @@ export struct WeiboPostDetail {
     syncWeiboSplitNavigation(this.weiboNavStack);
   }
 
-  private async loadComments(): Promise<void> {
-    if (this.postId.length === 0 || this.commentsLoading) {
-      return;
-    }
+  private async loadComments(append: boolean = false): Promise<void> {
+    if (this.postId.length === 0 || (append && (this.commentsLoading || !this.commentsHasMore))) { return; }
+    const revision: number = ++this.commentsRevision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
+    const pageNumber: number = append ? this.commentsPage + 1 : 1;
     this.commentsLoading = true;
     try {
-      const page = await WeiboService.getInstance().fetchComments(this.postId, 1);
-      this.comments = page.items;
+      const page = await WeiboService.getInstance().fetchComments(this.postId, pageNumber);
+      if (revision !== this.commentsRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      const ids: Set<string> = new Set();
+      const combined: WeiboComment[] = append ? this.comments.concat(page.items) : page.items;
+      const next: WeiboComment[] = combined.filter((comment: WeiboComment): boolean => {
+        if (!comment.id || ids.has(comment.id)) { return false; } ids.add(comment.id); return true;
+      });
+      this.commentsHasMore = page.hasMore && (!append || next.length > this.comments.length);
+      this.commentsPage = pageNumber; this.comments = next;
     } catch (error) {
-      const message: string = (error as Error).message ?? '帖子详情加载失败，请稍后重试';
-      this.getUIContext().getPromptAction().showToast({ message: message });
+      if (revision !== this.commentsRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      this.getUIContext().getPromptAction().showToast({ message: (error as Error).message });
     } finally {
-      this.commentsLoading = false;
+      if (revision === this.commentsRevision && session === WeiboAuthManager.getInstance().getGeneration()) { this.commentsLoading = false; }
     }
-  }
-
-  private copyPostWithLike(source: WeiboPost, liked: boolean): WeiboPost {
-    return {
-      id: source.id,
-      userId: source.userId,
-      userName: source.userName,
-      userAvatar: source.userAvatar,
-      text: source.text,
-      pictures: source.pictures,
-      videoUrl: source.videoUrl,
-      videoCoverUrl: source.videoCoverUrl,
-      createdAt: source.createdAt,
-      source: source.source,
-      likeCount: liked ? source.likeCount + 1 : Math.max(0, source.likeCount - 1),
-      commentCount: source.commentCount,
-      repostCount: source.repostCount,
-      isLiked: liked,
-      repost: source.repost,
-    };
   }
 
   private async toggleLike(): Promise<void> {
@@ -198,15 +208,19 @@ export struct WeiboPostDetail {
     }
     const source: WeiboPost = this.post;
     const liked: boolean = !source.isLiked;
+    const revision: number = this.viewRevision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     try {
       await WeiboService.getInstance().setLike(source.id, liked);
-      const updated: WeiboPost = this.copyPostWithLike(source, liked);
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      const updated: WeiboPost = PostEntities.shared().apply(source);
       this.post = updated;
       WeiboService.getInstance().rememberPost(updated);
       this.getUIContext().getPromptAction().showToast({
         message: liked ? $r('app.string.weibo_like_success') : $r('app.string.weibo_unlike_success')
       });
     } catch (error) {
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       const message: string = (error as Error).message ?? '微博操作失败';
       this.getUIContext().getPromptAction().showToast({ message: message });
     }
@@ -440,16 +454,20 @@ export struct WeiboPostDetail {
       return;
     }
     this.commentSending = true;
+    const revision: number = this.viewRevision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     try {
       await WeiboService.getInstance().publishComment(this.postId, this.commentDraft);
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.commentDraft = '';
       await this.loadComments();
       this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_comment_success') });
     } catch (error) {
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       const message: string = (error as Error).message ?? '评论发送失败';
       this.getUIContext().getPromptAction().showToast({ message: message });
     } finally {
-      this.commentSending = false;
+      if (revision === this.viewRevision && session === WeiboAuthManager.getInstance().getGeneration()) { this.commentSending = false; }
     }
   }
 
@@ -706,12 +724,17 @@ export struct WeiboPostDetail {
   @Builder
   CommentsSection() {
     Column({ space: Spacing.md }) {
+      if (this.commentsHasMore && this.comments.length > 0) {
+        Button(this.commentsLoading ? '正在加载评论' : '加载更多评论')
+          .enabled(!this.commentsLoading)
+          .onClick((): void => { this.loadComments(true); })
+      }
       Text($r('app.string.weibo_post_comments_title'))
         .fontSize(fs(18, this.fontScale))
         .fontWeight(FontWeight.Bold)
         .fontColor(Theme.textPrimary(this.isDark))
         .width('100%')
-      if (this.commentsLoading) {
+      if (this.commentsLoading && this.comments.length === 0) {
         Row({ space: Spacing.sm }) {
           LoadingProgress().width(18).height(18)
           Text($r('app.string.weibo_comments_loading'))

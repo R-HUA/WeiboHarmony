@@ -1,3 +1,4 @@
+import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode, resetConfigurationToFollowSystem, setDarkMode, syncDarkFromConfig } from '../common/Theme';
 import {
@@ -22,6 +23,7 @@ export struct WeiboSettings {
   @StorageLink('homeTabMaterialLevel') homeTabMaterialLevel: number = DEFAULT_HOME_TAB_MATERIAL_LEVEL;
   @StorageLink('columnMode') columnMode: number = 0;
   @StorageLink('weibo.top_rect_height') topRectHeight: number = 0;
+  @State signingOut: boolean = false;
   private settingsScroller: Scroller = new Scroller();
 
   private contentTopInset(): number {
@@ -251,6 +253,19 @@ export struct WeiboSettings {
     HdsNavigation() {
       Scroll(this.settingsScroller) {
         Column({ space: Spacing.md }) {
+          Button(this.signingOut ? '正在清理登录数据' : '退出微博登录')
+            .enabled(!this.signingOut)
+            .onClick(async (): Promise<void> => {
+              this.signingOut = true;
+              try {
+                const auth: WeiboAuthManager = WeiboAuthManager.getInstance();
+                await auth.init(this.getUIContext().getHostContext() as common.UIAbilityContext);
+                await auth.logout();
+                this.getUIContext().getPromptAction().showToast({ message: '已退出登录' });
+              } catch (error) {
+                this.getUIContext().getPromptAction().showToast({ message: '登录数据清理失败，请重试' });
+              } finally { this.signingOut = false; }
+            })
           this.SectionTitle('外观', '选择跟随系统、浅色或深色显示模式')
           Row({ space: Spacing.sm }) {
             this.ModeOption(0, $r('sys.symbol.phone'), '跟随系统')

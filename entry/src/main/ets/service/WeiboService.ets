@@ -1,155 +1,13 @@
+import { WeiboApiResponse, WeiboStatusApiResponse, WeiboConfigResponse, WeiboConfigData, WeiboFollowingTimelineResponse, WeiboResponseData, WeiboHotTopicJson, WeiboSuggestionJson, WeiboCardJson, WeiboUserJson, WeiboPictureJson, WeiboPictureSizeJson, WeiboVideoUrlsJson, WeiboVideoMediaInfoJson, WeiboPagePictureJson, WeiboPageInfoJson, WeiboPostJson, WeiboCommentJson } from '../api/WeiboDtos';
+import { WeiboMapper } from '../api/WeiboMapper';
+import { PostEntities } from '../store/PostEntities';
+import { ResponseCache } from '../domain/ResponseCache';
 import { formatWeiboTime, stripHtml } from '../common/Constants';
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { WeiboHttpClient } from '../network/WeiboHttpClient';
 import { WeiboComment, WeiboCommentsPage, WeiboHotTopic, WeiboPost, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from './WeiboAuthManager';
 import { WeiboVisitorSession } from './WeiboVisitorSession';
-
-interface WeiboApiResponse {
-  ok?: number;
-  msg?: string;
-  url?: string;
-  data?: WeiboResponseData;
-}
-
-/** The mobile status endpoint returns a post directly in its data field. */
-interface WeiboStatusApiResponse {
-  ok?: number;
-  data?: WeiboPostJson;
-}
-
-/** Authenticated mobile configuration exposes the UID for the current Cookie. */
-interface WeiboConfigResponse {
-  ok?: number;
-  msg?: string;
-  data?: WeiboConfigData;
-}
-
-interface WeiboConfigData {
-  login?: boolean;
-  uid?: string;
-}
-
-/** Desktop web's authenticated friends feed is not wrapped in a `data` object. */
-interface WeiboFollowingTimelineResponse {
-  ok?: number;
-  msg?: string;
-  statuses?: WeiboPostJson[];
-  max_id?: string | number;
-}
-
-interface WeiboResponseData {
-  cards?: WeiboCardJson[];
-  userInfo?: WeiboUserJson;
-  data?: WeiboCommentJson[];
-  max_id?: string;
-  realtime?: WeiboHotTopicJson[];
-  hotquery?: WeiboSuggestionJson[];
-}
-
-interface WeiboHotTopicJson {
-  rank?: number;
-  realpos?: number;
-  word?: string;
-  num?: number;
-  label_name?: string;
-  word_scheme?: string;
-}
-
-interface WeiboSuggestionJson {
-  suggestion?: string;
-  count?: number;
-  top_flag?: number;
-}
-
-interface WeiboCardJson {
-  card_type?: number;
-  mblog?: WeiboPostJson;
-  card_group?: WeiboCardJson[];
-}
-
-interface WeiboUserJson {
-  /** Weibo returns numeric IDs on some timeline surfaces and strings on others. */
-  id?: string | number;
-  screen_name?: string;
-  description?: string;
-  avatar_hd?: string;
-  profile_image_url?: string;
-  cover_image_phone?: string;
-  followers_count?: string | number;
-  follow_count?: string | number;
-  statuses_count?: string | number;
-  verified?: boolean;
-  verified_reason?: string;
-}
-
-interface WeiboPictureJson {
-  url?: string;
-  large?: WeiboPictureSizeJson;
-  largest?: WeiboPictureSizeJson;
-  mw2000?: WeiboPictureSizeJson;
-  original?: WeiboPictureSizeJson;
-}
-
-interface WeiboPictureSizeJson {
-  url?: string;
-}
-
-/** The video URL variants used by the mobile status API. */
-interface WeiboVideoUrlsJson {
-  mp4_1080p_60fps?: string;
-  mp4_1080p_mp4?: string;
-  mp4_hd_mp4?: string;
-  mp4_720p_mp4?: string;
-  mp4_sd_mp4?: string;
-  mp4_ld_mp4?: string;
-}
-
-interface WeiboVideoMediaInfoJson {
-  stream_url_hd?: string;
-  stream_url?: string;
-  stream_url_h5?: string;
-  mp4_hd_mp4?: string;
-  mp4_720p_mp4?: string;
-}
-
-interface WeiboPagePictureJson {
-  url?: string;
-}
-
-interface WeiboPageInfoJson {
-  type?: string;
-  urls?: WeiboVideoUrlsJson;
-  media_info?: WeiboVideoMediaInfoJson;
-  page_pic?: WeiboPagePictureJson;
-}
-
-interface WeiboPostJson {
-  /** Desktop timelines may use numbers while mobile endpoints use strings. */
-  id?: string | number;
-  mid?: string | number;
-  text?: string;
-  created_at?: string;
-  source?: string;
-  attitudes_count?: number;
-  comments_count?: number;
-  reposts_count?: number;
-  attitudes_status?: number;
-  user?: WeiboUserJson;
-  pics?: WeiboPictureJson[];
-  page_info?: WeiboPageInfoJson;
-  video_url?: string;
-  thumbnail_pic?: string;
-  retweeted_status?: WeiboPostJson;
-}
-
-interface WeiboCommentJson {
-  id?: string;
-  text?: string;
-  created_at?: string;
-  like_count?: number;
-  user?: WeiboUserJson;
-}
 
 /**
  * Adapter for public mobile containers and user-initiated post actions.
@@ -159,11 +17,17 @@ interface WeiboCommentJson {
 export class WeiboService {
   private static instance: WeiboService | null = null;
   private recentPost: WeiboPost | null = null;
-  /** One detail page can consume the comment request already started by its card. */
-  private recentCommentsPostId: string = '';
-  private recentComments: WeiboCommentsPage | null = null;
-  private pendingCommentsPostId: string = '';
-  private pendingComments: Promise<WeiboCommentsPage> | null = null;
+  private commentCache: ResponseCache<WeiboCommentsPage> = new ResponseCache<WeiboCommentsPage>();
+  private pendingLikes: Set<string> = new Set();
+
+  constructor() {
+    WeiboAuthManager.getInstance().onSessionChange((): void => {
+      this.recentPost = null;
+      PostEntities.shared().clear();
+      this.commentCache = new ResponseCache<WeiboCommentsPage>();
+      this.pendingLikes.clear();
+    });
+  }
 
   static getInstance(): WeiboService {
     if (WeiboService.instance === null) {
@@ -237,7 +101,7 @@ export class WeiboService {
    * lists followed users, while this desktop feed returns their actual posts.
    */
   async fetchFollowingTimeline(maxId: string): Promise<WeiboTimelinePage> {
-    const cookie: string = this.requireAccountCookie();
+    const cookie: string = this.requireAccountCookie(true);
     const cursor: string = maxId.trim().length > 0 ? maxId.trim() : '0';
     const raw: string = await WeiboHttpClient.getDesktop(
       `https://weibo.com/ajax/feed/friendstimeline?count=20&max_id=${encodeURIComponent(cursor)}`, cookie);
@@ -277,7 +141,7 @@ export class WeiboService {
       throw new Error('微博没有返回帖子详情');
     }
     const post: WeiboPost = this.toPost(response.data);
-    this.recentPost = post;
+    this.recentPost = PostEntities.shared().adopt(post);
     return post;
   }
 
@@ -295,43 +159,13 @@ export class WeiboService {
   async fetchComments(postId: string, page: number): Promise<WeiboCommentsPage> {
     const id: string = postId.trim();
     const safePage: number = page < 1 ? 1 : page;
-    if (safePage === 1 && this.recentComments !== null && this.recentCommentsPostId === id) {
-      return this.recentComments;
-    }
-    if (safePage === 1 && this.pendingComments !== null && this.pendingCommentsPostId === id) {
-      return await this.pendingComments;
-    }
-    const request: Promise<WeiboCommentsPage> = this.fetchCommentsPage(id, safePage);
-    if (safePage !== 1) {
-      return await request;
-    }
-    this.pendingCommentsPostId = id;
-    this.pendingComments = request;
-    try {
-      const result: WeiboCommentsPage = await request;
-      this.recentCommentsPostId = id;
-      this.recentComments = result;
-      return result;
-    } finally {
-      if (this.pendingCommentsPostId === id) {
-        this.pendingCommentsPostId = '';
-        this.pendingComments = null;
-      }
-    }
+    if (safePage !== 1) { return this.fetchCommentsPage(id, safePage); }
+    return this.commentCache.get(id, () => this.fetchCommentsPage(id, 1));
   }
 
-  /** Starts comments during the route transition; failures remain silent until the detail page needs them. */
   prefetchComments(postId: string): void {
-    const id: string = postId.trim();
-    if (id.length === 0 || (this.recentComments !== null && this.recentCommentsPostId === id)
-      || (this.pendingComments !== null && this.pendingCommentsPostId === id)) {
-      return;
-    }
-    const task: Promise<WeiboCommentsPage> = this.fetchComments(id, 1);
-    task.then(
-      (): void => {},
-      (): void => {}
-    );
+    if (postId.trim().length === 0) { return; }
+    this.fetchComments(postId, 1).catch((): void => {});
   }
 
   private async fetchCommentsPage(postId: string, page: number): Promise<WeiboCommentsPage> {
@@ -350,7 +184,7 @@ export class WeiboService {
   /** Like or cancel a like. This is never called automatically. */
   async setLike(postId: string, like: boolean): Promise<void> {
     const id: string = postId.trim();
-    const cookie: string = this.requireAccountCookie();
+    const cookie: string = this.requireAccountCookie(true);
     if (id.length === 0) {
       throw new Error('微博信息不完整，无法点赞');
     }
@@ -359,8 +193,13 @@ export class WeiboService {
     const endpoint: string = like
       ? 'https://weibo.com/ajax/statuses/setLike'
       : 'https://weibo.com/ajax/statuses/cancelLike';
-    const raw: string = await WeiboHttpClient.postForm(endpoint, cookie, form);
-    this.parseResponse(raw);
+    if (this.pendingLikes.has(id)) { throw new Error('点赞请求正在处理中'); }
+    this.pendingLikes.add(id);
+    try {
+      const raw: string = await WeiboHttpClient.postForm(endpoint, cookie, form);
+      this.parseResponse(raw);
+      PostEntities.shared().confirmLike(id, like);
+    } finally { this.pendingLikes.delete(id); }
   }
 
   /** Publish one user-authored comment after the user presses Send. */
@@ -373,8 +212,12 @@ export class WeiboService {
     }
     const form: rcp.Form = new rcp.Form({ id: id, content: cleanContent });
     form.keys = ['id', 'content'];
-    const raw: string = await WeiboHttpClient.postForm('https://m.weibo.cn/api/comments/create', cookie, form);
-    this.parseResponse(raw);
+    // A timed-out write may have reached the server too. Never reuse its old comments.
+    this.commentCache.invalidate(id);
+    try {
+      const raw: string = await WeiboHttpClient.postForm('https://m.weibo.cn/api/comments/create', cookie, form);
+      this.parseResponse(raw);
+    } finally { this.commentCache.invalidate(id); }
   }
 
   /**
@@ -481,10 +324,11 @@ export class WeiboService {
     }
   }
 
-  private requireAccountCookie(): string {
-    const cookie: string = WeiboAuthManager.getInstance().getCookie();
-    if (!WeiboAuthManager.getInstance().hasCookie()) {
-      throw new Error('请先在“我的”中粘贴你自己的微博登录 Cookie');
+  private requireAccountCookie(desktop: boolean = false): string {
+    const auth: WeiboAuthManager = WeiboAuthManager.getInstance();
+    const cookie: string = desktop ? auth.getDesktopCookie() : auth.getCookie();
+    if (!WeiboAuthManager.getInstance().hasCookie() || cookie.length === 0) {
+      throw new Error('请先在“我的”中完成微博登录');
     }
     return cookie;
   }
@@ -511,97 +355,7 @@ export class WeiboService {
     return response;
   }
 
-  private toUser(source: WeiboUserJson): WeiboUser {
-    const hdAvatar: string = source.avatar_hd?.trim() ?? '';
-    const avatar: string = hdAvatar.length > 0 ? hdAvatar : (source.profile_image_url?.trim() ?? '');
-    const rawId: string | number | undefined = source.id;
-    const rawFollowersCount: string | number | undefined = source.followers_count;
-    const rawFollowingCount: string | number | undefined = source.follow_count;
-    const rawStatusesCount: string | number | undefined = source.statuses_count;
-    const userId: string = rawId === undefined ? '' : `${rawId}`;
-    const followersCount: string = rawFollowersCount === undefined ? '' : `${rawFollowersCount}`;
-    const followingCount: number = rawFollowingCount === undefined ? 0 : Number(rawFollowingCount);
-    const statusesCount: number = rawStatusesCount === undefined ? 0 : Number(rawStatusesCount);
-    return {
-      id: userId,
-      screenName: source.screen_name ?? '',
-      description: source.description ?? '',
-      avatarUrl: avatar,
-      coverUrl: source.cover_image_phone ?? '',
-      followersCount: followersCount,
-      followingCount: followingCount,
-      statusesCount: statusesCount,
-      verified: source.verified ?? false,
-      verifiedReason: source.verified_reason ?? '',
-    };
-  }
-
-  private toPost(source: WeiboPostJson): WeiboPost {
-    const author: WeiboUser = this.toUser(source.user ?? {});
-    const pictures: string[] = [];
-    const pictureSource: WeiboPictureJson[] = source.pics ?? [];
-    for (let index: number = 0; index < pictureSource.length; index++) {
-      const picture: WeiboPictureJson = pictureSource[index];
-      // The mobile endpoint normally returns the original file in `original`.
-      // Keep high-quality fallbacks for cards whose original field is omitted.
-      const imageUrl: string = picture.original?.url
-        ?? picture.largest?.url
-        ?? picture.mw2000?.url
-        ?? picture.large?.url
-        ?? picture.url
-        ?? '';
-      if (imageUrl.length > 0) {
-        pictures.push(imageUrl);
-      }
-    }
-    const pageInfo: WeiboPageInfoJson | undefined = source.page_info;
-    const mediaInfo: WeiboVideoMediaInfoJson | undefined = pageInfo?.media_info;
-    const videoUrls: WeiboVideoUrlsJson | undefined = pageInfo?.urls;
-    const videoUrl: string = mediaInfo?.stream_url_hd
-      ?? mediaInfo?.stream_url
-      ?? videoUrls?.mp4_1080p_60fps
-      ?? videoUrls?.mp4_1080p_mp4
-      ?? videoUrls?.mp4_hd_mp4
-      ?? mediaInfo?.mp4_hd_mp4
-      ?? videoUrls?.mp4_720p_mp4
-      ?? mediaInfo?.mp4_720p_mp4
-      ?? videoUrls?.mp4_sd_mp4
-      ?? videoUrls?.mp4_ld_mp4
-      ?? source.video_url
-      ?? '';
-    const videoCoverUrl: string = pageInfo?.page_pic?.url ?? source.thumbnail_pic ?? '';
-    const repostSource: WeiboPostJson | undefined = source.retweeted_status;
-    const rawPostId: string | number | undefined = source.id ?? source.mid;
-    const postId: string = rawPostId === undefined ? '' : `${rawPostId}`;
-    return {
-      id: postId,
-      userId: author.id,
-      userName: author.screenName,
-      userAvatar: author.avatarUrl,
-      text: stripHtml(source.text ?? ''),
-      pictures: pictures,
-      videoUrl: videoUrl,
-      videoCoverUrl: videoCoverUrl,
-      createdAt: formatWeiboTime(source.created_at ?? ''),
-      source: stripHtml(source.source ?? ''),
-      likeCount: source.attitudes_count ?? 0,
-      commentCount: source.comments_count ?? 0,
-      repostCount: source.reposts_count ?? 0,
-      isLiked: source.attitudes_status === 1,
-      repost: repostSource === undefined ? null : this.toPost(repostSource),
-    };
-  }
-
-  private toComment(source: WeiboCommentJson): WeiboComment {
-    const author: WeiboUser = this.toUser(source.user ?? {});
-    return {
-      id: source.id ?? '',
-      userId: author.id,
-      userName: author.screenName,
-      userAvatar: author.avatarUrl,
-      text: stripHtml(source.text ?? ''),
-      createdAt: formatWeiboTime(source.created_at ?? ''),
-      likeCount: source.like_count ?? 0,
-    };
-  }
+  private toUser(source: WeiboUserJson): WeiboUser { return WeiboMapper.toUser(source); }
+  private toPost(source: WeiboPostJson): WeiboPost { return PostEntities.shared().adopt(WeiboMapper.toPost(source)); }
+  private toComment(source: WeiboCommentJson): WeiboComment { return WeiboMapper.toComment(source); }
 }

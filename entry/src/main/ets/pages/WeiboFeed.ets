@@ -1,3 +1,4 @@
+import { PostEntities } from '../store/PostEntities';
 import { common } from '@kit.AbilityKit';
 import { WeiboComment, WeiboPost, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
@@ -48,6 +49,8 @@ class WeiboFeedDataSource implements IDataSource {
 @Component
 export struct WeiboFeed {
   @Prop showBack: boolean = true;
+  @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
+  private onPostEntitiesChanged(): void { this.posts = this.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post)); }
   @State isDark: boolean = isDarkMode();
   @State userIdDraft: string = '';
   @State profile: WeiboUser | null = null;
@@ -224,26 +227,6 @@ export struct WeiboFeed {
     }
   }
 
-  private copyPostWithLike(post: WeiboPost, liked: boolean): WeiboPost {
-    return {
-      id: post.id,
-      userId: post.userId,
-      userName: post.userName,
-      userAvatar: post.userAvatar,
-      text: post.text,
-      pictures: post.pictures,
-      videoUrl: post.videoUrl,
-      videoCoverUrl: post.videoCoverUrl,
-      createdAt: post.createdAt,
-      source: post.source,
-      likeCount: liked ? post.likeCount + 1 : Math.max(0, post.likeCount - 1),
-      commentCount: post.commentCount,
-      repostCount: post.repostCount,
-      isLiked: liked,
-      repost: post.repost,
-    };
-  }
-
   private async toggleLike(post: WeiboPost): Promise<void> {
     const liked: boolean = !post.isLiked;
     try {
@@ -251,7 +234,7 @@ export struct WeiboFeed {
       const updated: WeiboPost[] = [];
       for (let index: number = 0; index < this.posts.length; index++) {
         const item: WeiboPost = this.posts[index];
-        updated.push(item.id === post.id ? this.copyPostWithLike(item, liked) : item);
+        updated.push(item.id === post.id ? PostEntities.shared().apply(item) : item);
       }
       this.posts = updated;
       this.getUIContext().getPromptAction().showToast({

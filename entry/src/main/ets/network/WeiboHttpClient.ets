@@ -1,4 +1,6 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
+import { RequestQueue } from '../domain/RequestQueue';
+import { apiOrigin, xsrfToken } from '../domain/RequestPolicy';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 const WEIBO_REFERER: string = 'https://m.weibo.cn/';
@@ -13,7 +15,7 @@ const MOBILE_PRECONNECT_COOLDOWN_MS: number = 180000;
 /** A small isolated client so Weibo requests never inherit Tieba cookies. */
 export class WeiboHttpClient {
   private static session: rcp.Session | null = null;
-  private static lastRequestAt: number = 0;
+  private static queue: RequestQueue = new RequestQueue(MIN_REQUEST_INTERVAL_MS);
   /** API 24+: keep the one mobile-origin handshake warm for the feed's first request. */
   private static mobilePreconnectTask: Promise<void> | null = null;
   private static lastMobilePreconnectAt: number = 0;
@@ -23,7 +25,7 @@ export class WeiboHttpClient {
       WeiboHttpClient.session = rcp.createSession({
         requestConfiguration: {
           transfer: {
-            autoRedirect: true,
+            autoRedirect: false,
             maxAutoRedirects: 5,
             timeout: { connectMs: 15000, transferMs: 30000 },
           },
@@ -34,12 +36,14 @@ export class WeiboHttpClient {
   }
 
   static async get(url: string, cookie: string): Promise<string> {
-    return WeiboHttpClient.request(url, WeiboHttpClient.buildMobileHeaders(cookie));
+    apiOrigin(url);
+    return WeiboHttpClient.queue.enqueue<string>(() => WeiboHttpClient.request(url, WeiboHttpClient.buildMobileHeaders(cookie)));
   }
 
   /** Desktop APIs can read public data anonymously or the account's own feed with its Cookie. */
   static async getDesktop(url: string, cookie: string = ''): Promise<string> {
-    return WeiboHttpClient.request(url, WeiboHttpClient.buildDesktopHeaders(cookie));
+    apiOrigin(url);
+    return WeiboHttpClient.queue.enqueue<string>(() => WeiboHttpClient.request(url, WeiboHttpClient.buildDesktopHeaders(cookie)));
   }
 
   /**
@@ -57,15 +61,25 @@ export class WeiboHttpClient {
     WeiboHttpClient.mobilePreconnectTask = WeiboHttpClient.connectMobileOnly();
   }
 
+  static invalidateSession(): void {
+    WeiboHttpClient.queue.invalidate();
+    WeiboHttpClient.session?.cancel();
+  }
+
   /**
    * Write requests are deliberately explicit: callers create the form only
    * after a direct user gesture, and must pass the user-provided Cookie.
    */
   static async postForm(url: string, cookie: string, form: rcp.Form): Promise<string> {
+    apiOrigin(url);
+    return WeiboHttpClient.queue.enqueue<string>(() => WeiboHttpClient.performPost(url, cookie, form), 10);
+  }
+
+  private static async performPost(url: string, cookie: string, form: rcp.Form): Promise<string> {
     try {
-      await WeiboHttpClient.waitForRequestSlot();
       const request: rcp.Request = new rcp.Request(url, 'POST');
-      request.headers = WeiboHttpClient.buildMobileHeaders(cookie);
+      request.headers = apiOrigin(url) === WEIBO_DESKTOP_REFERER
+        ? WeiboHttpClient.buildDesktopHeaders(cookie) : WeiboHttpClient.buildMobileHeaders(cookie);
       request.content = form;
       const response: rcp.Response = await WeiboHttpClient.getSession().fetch(request);
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -77,13 +91,12 @@ export class WeiboHttpClient {
         throw error;
       }
       const businessError: BusinessError = error as BusinessError;
-      throw new WeiboRequestError(businessError.code ?? -1, businessError.message ?? '微博写入请求失败');
+      throw new WeiboRequestError(businessError.code ?? -1, '发送结果未知，请核对微博后再决定是否重试');
     }
   }
 
   private static async request(url: string, headers: Record<string, string>): Promise<string> {
     try {
-      await WeiboHttpClient.waitForRequestSlot();
       const request: rcp.Request = new rcp.Request(url, 'GET');
       request.headers = headers;
       const response = await WeiboHttpClient.getSession().fetch(request);
@@ -117,18 +130,6 @@ export class WeiboHttpClient {
     }
   }
 
-  /** Fixed pacing avoids aggressive parallel polling against an undocumented endpoint. */
-  private static async waitForRequestSlot(): Promise<void> {
-    const now: number = Date.now();
-    const elapsed: number = now - WeiboHttpClient.lastRequestAt;
-    const waitMs: number = MIN_REQUEST_INTERVAL_MS - elapsed;
-    if (waitMs > 0) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, waitMs);
-      });
-    }
-    WeiboHttpClient.lastRequestAt = Date.now();
-  }
 
   private static buildMobileHeaders(cookie: string): Record<string, string> {
     const headers: Record<string, string> = {
@@ -141,10 +142,8 @@ export class WeiboHttpClient {
     };
     if (cookie.length > 0) {
       headers['Cookie'] = cookie;
-      const match: RegExpExecArray | null = /(?:^|;\s*)XSRF-TOKEN=([^;]+)/.exec(cookie);
-      if (match !== null && match[1].length > 0) {
-        headers['X-XSRF-TOKEN'] = match[1];
-      }
+      const token: string = xsrfToken(cookie);
+      if (token.length > 0) { headers['X-XSRF-TOKEN'] = token; }
     }
     return headers;
   }
@@ -159,10 +158,8 @@ export class WeiboHttpClient {
     };
     if (cookie.length > 0) {
       headers['Cookie'] = cookie;
-      const match: RegExpExecArray | null = /(?:^|;\s*)XSRF-TOKEN=([^;]+)/.exec(cookie);
-      if (match !== null && match[1].length > 0) {
-        headers['X-XSRF-TOKEN'] = match[1];
-      }
+      const token: string = xsrfToken(cookie);
+      if (token.length > 0) { headers['X-XSRF-TOKEN'] = token; }
     }
     return headers;
   }

@@ -1,0 +1,25 @@
+{
+  "idstr": "9007199254740993123",
+  "id": 9007199254740992,
+  "text": "合成样本 <a href=\"https://weibo.com/u/42\">@用户</a>",
+  "created_at": "刚刚",
+  "isLongText": true,
+  "user": {
+    "idstr": "42",
+    "screen_name": "测试用户"
+  },
+  "pics": [
+    {
+      "original": {
+        "url": ""
+      },
+      "large": {
+        "url": "https://example.invalid/fixture.jpg"
+      }
+    }
+  ],
+  "retweeted_status": {
+    "id": "123",
+    "text": "转发合成内容"
+  }
+}

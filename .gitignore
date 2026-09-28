@@ -49,3 +49,6 @@ Thumbs.db
 desktop.ini
 *.swp
 *~
+
+# Local build diagnostics
+/build-check.log

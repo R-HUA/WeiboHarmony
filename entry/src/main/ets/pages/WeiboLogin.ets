@@ -33,18 +33,12 @@ struct WeiboLogin {
     }
     this.checking = true;
     try {
-      const cookie: string = await webview.WebCookieManager.fetchCookie(COOKIE_URL, false);
-      if (!cookie.includes('SUB=')) {
-        this.statusText = '尚未检测到登录态，请完成登录后重试';
-        return;
-      }
-      await WeiboAuthManager.getInstance().setCookie(cookie);
-      AppStorage.setOrCreate<number>('weiboAuthTick', (AppStorage.get<number>('weiboAuthTick') ?? 0) + 1);
+      await WeiboAuthManager.getInstance().finishWebLogin();
       this.statusText = '登录态已保存';
       this.getUIContext().getPromptAction().showToast({ message: '微博登录成功' });
       this.getUIContext().getRouter().back();
     } catch (error) {
-      this.statusText = '读取登录态失败，请稍后重试';
+      this.statusText = (error as Error).message ?? '读取登录态失败，请稍后重试';
     } finally {
       this.checking = false;
     }

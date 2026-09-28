@@ -1,3 +1,4 @@
+import { PostEntities } from '../store/PostEntities';
 import { common } from '@kit.AbilityKit';
 import { curves } from '@kit.ArkUI';
 import { ThreadCard, ThreadItemData, ThreadSharePayload, EmptyView, ErrorView } from '../components/CommonComponents';
@@ -77,6 +78,8 @@ export struct WeiboHomeTab {
   @Prop bottomInset: number = 116;
   onOpenPost: (post: WeiboPost) => void = () => {};
   onOpenUserProfile: (userId: string, userName: string) => void = () => {};
+  @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
+  private onPostEntitiesChanged(): void { this.posts = this.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post)); }
   @State isDark: boolean = isDarkMode();
   @State userIdDraft: string = '';
   @State profile: WeiboUser | null = null;
@@ -116,6 +119,19 @@ export struct WeiboHomeTab {
     }
   }
 
+  private requestGeneration: number = 0;
+  private refreshing: boolean = false;
+  aboutToDisappear(): void { this.requestGeneration++; }
+  private isCurrent(generation: number, session: number): boolean {
+    return generation === this.requestGeneration && session === WeiboAuthManager.getInstance().getGeneration();
+  }
+  private uniquePosts(posts: WeiboPost[]): WeiboPost[] {
+    const ids: Set<string> = new Set();
+    return posts.filter((post: WeiboPost): boolean => {
+      if (post.id.length === 0 || ids.has(post.id)) { return false; }
+      ids.add(post.id); return true;
+    });
+  }
   private onDarkTick(): void {
     this.isDark = isDarkMode();
   }
@@ -233,7 +249,8 @@ export struct WeiboHomeTab {
   private onWeiboAuthTick(): void {
     // A refreshed account session can change the server's personalized feed.
     // Keep current cards visible until its first fresh page replaces them.
-    this.loadFirstPage(true);
+    this.posts = [];
+    this.loadFirstPage();
   }
 
   /**
@@ -242,6 +259,11 @@ export struct WeiboHomeTab {
    * full loading state.
    */
   private async loadFirstPage(preserveCurrentContent: boolean = false): Promise<void> {
+    const generation: number = ++this.requestGeneration;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
+    this.loadingMore = false;
+    this.refreshing = true;
+    try {
     if (this.mode === WeiboTimelineMode.Recommend || this.mode === WeiboTimelineMode.Following) {
       const keepCurrentContent: boolean = preserveCurrentContent
         && this.timelineState === TimelineState.Success
@@ -258,15 +280,18 @@ export struct WeiboHomeTab {
           more = result.length > 0;
         } else {
           const followingPage: WeiboTimelinePage = await WeiboService.getInstance().fetchFollowingTimeline('0');
+          if (!this.isCurrent(generation, session)) { return; }
           result = followingPage.items;
           this.followingMaxId = followingPage.nextMaxId;
           more = followingPage.hasMore;
         }
-        this.posts = result;
+        if (!this.isCurrent(generation, session)) { return; }
+      this.posts = this.uniquePosts(result);
         this.currentPage = 1;
         this.hasMore = more;
         this.timelineState = result.length > 0 ? TimelineState.Success : TimelineState.Empty;
       } catch (error) {
+      if (!this.isCurrent(generation, session)) { return; }
         this.errorMessage = (error as Error).message ?? '推荐微博加载失败，请稍后重试';
         if (keepCurrentContent) {
           this.getUIContext().getPromptAction().showToast({ message: this.errorMessage });
@@ -287,28 +312,35 @@ export struct WeiboHomeTab {
     try {
       await WeiboAuthManager.getInstance().setTargetUserId(userId);
       const service: WeiboService = WeiboService.getInstance();
-      this.profile = await service.fetchUserProfile(userId);
+      const profile: WeiboUser = await service.fetchUserProfile(userId);
+      if (!this.isCurrent(generation, session)) { return; }
+      this.profile = profile;
       const result: WeiboPost[] = await service.fetchUserTimeline(userId, 1);
-      this.posts = result;
+      if (!this.isCurrent(generation, session)) { return; }
+      this.posts = this.uniquePosts(result);
       this.currentPage = 1;
       this.hasMore = result.length > 0;
       this.timelineState = result.length > 0 ? TimelineState.Success : TimelineState.Empty;
     } catch (error) {
+      if (!this.isCurrent(generation, session)) { return; }
       this.profile = null;
       this.posts = [];
       this.errorMessage = (error as Error).message ?? '微博加载失败，请稍后重试';
       this.timelineState = TimelineState.Error;
     }
+    } finally { if (this.isCurrent(generation, session)) { this.refreshing = false; } }
   }
 
   private async loadMore(): Promise<void> {
-    if (this.loadingMore || !this.hasMore || this.timelineState !== TimelineState.Success) {
+    if (this.refreshing || this.loadingMore || !this.hasMore || this.timelineState !== TimelineState.Success) {
       return;
     }
     const userId: string = this.userIdDraft.trim();
     if (this.mode !== WeiboTimelineMode.Recommend && this.mode !== WeiboTimelineMode.Following && userId.length === 0) {
       return;
     }
+    const generation: number = this.requestGeneration;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     this.loadingMore = true;
     try {
       const nextPage: number = this.currentPage + 1;
@@ -320,6 +352,7 @@ export struct WeiboHomeTab {
       } else if (this.mode === WeiboTimelineMode.Following) {
         const followingPage: WeiboTimelinePage = await WeiboService.getInstance()
           .fetchFollowingTimeline(this.followingMaxId);
+        if (!this.isCurrent(generation, session)) { return; }
         result = followingPage.items;
         this.followingMaxId = followingPage.nextMaxId;
         more = followingPage.hasMore;
@@ -327,8 +360,9 @@ export struct WeiboHomeTab {
         result = await WeiboService.getInstance().fetchUserTimeline(userId, nextPage);
         more = result.length > 0;
       }
+      if (!this.isCurrent(generation, session)) { return; }
       if (result.length > 0) {
-        this.posts = this.posts.concat(result);
+        this.posts = this.uniquePosts(this.posts.concat(result));
         this.currentPage = nextPage;
         this.hasMore = more;
       } else {
@@ -336,10 +370,11 @@ export struct WeiboHomeTab {
         this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_empty') });
       }
     } catch (error) {
+      if (!this.isCurrent(generation, session)) { return; }
       this.errorMessage = (error as Error).message ?? '微博加载失败，请稍后重试';
       this.getUIContext().getPromptAction().showToast({ message: this.errorMessage });
     } finally {
-      this.loadingMore = false;
+      if (this.isCurrent(generation, session)) { this.loadingMore = false; }
     }
   }
 
@@ -407,33 +442,13 @@ export struct WeiboHomeTab {
     ShareUtil.shareLink(this.getUIContext(), context, url, data.author, abstract);
   }
 
-  private copyPostWithLike(post: WeiboPost, liked: boolean): WeiboPost {
-    return {
-      id: post.id,
-      userId: post.userId,
-      userName: post.userName,
-      userAvatar: post.userAvatar,
-      text: post.text,
-      pictures: post.pictures,
-      videoUrl: post.videoUrl,
-      videoCoverUrl: post.videoCoverUrl,
-      createdAt: post.createdAt,
-      source: post.source,
-      likeCount: liked ? post.likeCount + 1 : Math.max(0, post.likeCount - 1),
-      commentCount: post.commentCount,
-      repostCount: post.repostCount,
-      isLiked: liked,
-      repost: post.repost,
-    };
-  }
-
   private async toggleLike(post: WeiboPost, liked: boolean): Promise<void> {
     try {
       await WeiboService.getInstance().setLike(post.id, liked);
       const updated: WeiboPost[] = [];
       for (let index: number = 0; index < this.posts.length; index++) {
         const item: WeiboPost = this.posts[index];
-        updated.push(item.id === post.id ? this.copyPostWithLike(item, liked) : item);
+        updated.push(item.id === post.id ? PostEntities.shared().apply(item) : item);
       }
       this.posts = updated;
       this.getUIContext().getPromptAction().showToast({

@@ -1,15 +1,9 @@
+import { PostEntities } from '../store/PostEntities';
 import { ThreadCard, ThreadItemData, EmptyView, ErrorView, LoadingView } from '../components/CommonComponents';
 import { curves } from '@kit.ArkUI';
 import { WeiboPost, WeiboSuggestion } from '../model/WeiboModel';
-import { WeiboService } from '../service/WeiboService';
+import { SearchStore, SearchLoadState } from '../store/SearchStore';
 import { ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode } from '../common/Theme';
-
-enum SearchLoadState {
-  Idle = 0,
-  Loading = 1,
-  Success = 2,
-  Error = 3,
-}
 
 type TabAnimationDirection = 'left' | 'right';
 
@@ -22,13 +16,12 @@ export struct WeiboSearch {
   @Prop @Watch('onExit') exitTrigger: number = 0;
   onOpenPost: (post: WeiboPost) => void = () => {};
   onOpenUserProfile: (userId: string, userName: string) => void = () => {};
+  @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
+  private onPostEntitiesChanged(): void { this.store.posts = this.store.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post)); }
   @State isDark: boolean = isDarkMode();
   @StorageLink('weiboSearchQuery') keyword: string = '';
   @StorageLink('weiboSearchRequestTick') @Watch('onSearchRequested') searchRequestTick: number = 0;
-  @State state: SearchLoadState = SearchLoadState.Idle;
-  @State suggestions: WeiboSuggestion[] = [];
-  @State posts: WeiboPost[] = [];
-  @State errorMessage: string = '';
+  @State store: SearchStore = new SearchStore();
   @State pageTranslateX: number = 0;
   @State pageOpacity: number = 1;
   @State isAnimating: boolean = false;
@@ -90,38 +83,11 @@ export struct WeiboSearch {
     setTimeout((): void => { this.isAnimating = false; }, 600);
   }
 
-  private onSearchRequested(): void {
-    if (this.keyword.trim().length === 0) {
-      this.posts = [];
-      this.suggestions = [];
-      this.state = SearchLoadState.Idle;
-      return;
-    }
-    this.search();
-  }
-
-  private async search(): Promise<void> {
-    if (this.keyword.trim().length === 0) {
-      return;
-    }
-    this.state = SearchLoadState.Loading;
-    this.errorMessage = '';
-    try {
-      const service: WeiboService = WeiboService.getInstance();
-      this.posts = await service.fetchSearchPosts(this.keyword, 1);
-      try {
-        this.suggestions = await service.fetchSuggestions(this.keyword, 8);
-      } catch (error) {
-        this.suggestions = [];
-      }
-      this.state = SearchLoadState.Success;
-    } catch (error) {
-      this.suggestions = [];
-      this.posts = [];
-      this.errorMessage = (error as Error).message ?? '微博搜索加载失败，请稍后重试';
-      this.state = SearchLoadState.Error;
-    }
-  }
+  @StorageLink('weiboAuthTick') @Watch('onSessionChanged') authTick: number = 0;
+  private onSessionChanged(): void { this.store.clear(); }
+  aboutToDisappear(): void { this.store.cancel(); }
+  private onSearchRequested(): void { this.search(); }
+  private async search(): Promise<void> { await this.store.search(this.keyword); }
 
   private toThreadCard(post: WeiboPost): ThreadItemData {
     const firstImage: string = post.pictures.length > 0 ? post.pictures[0] : '';
@@ -214,18 +180,18 @@ export struct WeiboSearch {
   build() {
     Scroll(this.pageScroller) {
       Column({ space: Spacing.md }) {
-        if (this.state === SearchLoadState.Loading) {
+        if (this.store.state === SearchLoadState.Loading) {
           LoadingView({ message: $r('app.string.weibo_loading') })
             .height(360)
-        } else if (this.state === SearchLoadState.Error) {
-          ErrorView({ message: this.errorMessage, onRetry: (): void => { this.search(); } })
+        } else if (this.store.state === SearchLoadState.Error) {
+          ErrorView({ message: this.store.errorMessage, onRetry: (): void => { this.search(); } })
             .height(360)
-        } else if (this.state === SearchLoadState.Success && this.posts.length === 0 && this.suggestions.length === 0) {
+        } else if (this.store.state === SearchLoadState.Success && this.store.posts.length === 0 && this.store.suggestions.length === 0) {
           EmptyView({ message: $r('app.string.weibo_search_empty'), icon: '⌕' })
             .height(360)
-        } else if (this.state === SearchLoadState.Success) {
+        } else if (this.store.state === SearchLoadState.Success) {
           Column({ space: Spacing.sm }) {
-            ForEach(this.posts, (post: WeiboPost): void => {
+            ForEach(this.store.posts, (post: WeiboPost): void => {
               ThreadCard({
                 item: this.toThreadCard(post),
                 onTap: (_id: string): void => { this.openPost(post); },
@@ -235,7 +201,15 @@ export struct WeiboSearch {
                 skipImageCache: true,
               })
             }, (post: WeiboPost): string => post.id)
-            ForEach(this.suggestions, (item: WeiboSuggestion): void => {
+            if (this.store.errorMessage.length > 0) {
+              Text(this.store.errorMessage).fontColor(Theme.textSecondary(this.isDark))
+            }
+            if (this.store.nextCursor !== null) {
+              Button(this.store.loadingMore ? '正在加载' : '加载更多微博')
+                .enabled(!this.store.loadingMore)
+                .onClick((): void => { this.store.loadMore(); })
+            }
+            ForEach(this.store.suggestions, (item: WeiboSuggestion): void => {
               this.SuggestionRow(item)
             }, (item: WeiboSuggestion): string => item.word)
           }

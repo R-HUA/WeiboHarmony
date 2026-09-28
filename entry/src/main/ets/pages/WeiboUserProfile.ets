@@ -1,3 +1,4 @@
+import { PostEntities } from '../store/PostEntities';
 import { WeiboPost, WeiboUser } from '../model/WeiboModel';
 import { WeiboService } from '../service/WeiboService';
 import { ThreadCard, ThreadItemData } from '../components/CommonComponents';
@@ -20,6 +21,8 @@ export function WeiboUserProfileBuilder(): void {
 /** Public profile and recent posts for the author selected from a timeline card. */
 @Component
 export struct WeiboUserProfile {
+  @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
+  private onPostEntitiesChanged(): void { this.posts = this.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post)); }
   @State isDark: boolean = isDarkMode();
   @State userId: string = '';
   @State fallbackName: string = '';

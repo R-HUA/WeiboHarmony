@@ -20,6 +20,11 @@ export interface WeiboUser {
 }
 
 export interface WeiboPost {
+  rawText?: string;
+  rawCreatedAt?: string;
+  createdAtTimestamp?: number | null;
+  fetchedAt?: number;
+  isLongText?: boolean;
   id: string;
   userId: string;
   userName: string;
