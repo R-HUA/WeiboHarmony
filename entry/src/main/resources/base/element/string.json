@@ -253,6 +253,10 @@
       "value": "加载更多"
     },
     {
+      "name": "weibo_timeline_no_more",
+      "value": "没有更多了"
+    },
+    {
       "name": "weibo_readonly_action",
       "value": "请在帖子详情中执行该操作"
     },

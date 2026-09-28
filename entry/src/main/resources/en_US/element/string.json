@@ -38,6 +38,8 @@
     { "name": "weibo_gesture_share_likes", "value": "Likes" },
     { "name": "weibo_recommend_title", "value": "For you" },
     { "name": "weibo_following_title", "value": "Following" },
+    { "name": "weibo_timeline_load_more", "value": "Load more" },
+    { "name": "weibo_timeline_no_more", "value": "No more posts" },
     { "name": "weibo_feature_unavailable", "value": "This Weibo feature is not available yet." },
     { "name": "weibo_search_title", "value": "Weibo Search" },
     { "name": "weibo_search_placeholder", "value": "Search Weibo posts" },

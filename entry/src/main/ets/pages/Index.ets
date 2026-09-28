@@ -99,6 +99,8 @@ struct Index {
   private hdsTabsController: HdsTabsController = new HdsTabsController();
   /** Changes the keyed home subtree so ArkUI destroys and recreates both feeds. */
   @State homeFeedRebuildVersion: number = 0;
+  /** 递增一次即让当前可见的首页信息流平滑回到列表顶端。 */
+  @State homeScrollTopTrigger: number = 0;
   private lastHomeTabTapAt: number = 0;
   @State hdsTabsModifier: HdsTabsModifier = new HdsTabsModifier();
   private discoverScroller: Scroller = new Scroller();
@@ -391,19 +393,29 @@ struct Index {
     setTimeout((): void => { this.mineAnimating = false; }, 600);
   }
 
-  /** Rebuild only when the already-selected Home tab receives a double tap. */
+  /**
+   * 底部首页 Tab 的点击语义：单击当前首页 → 平滑回到列表顶端；
+   * 360ms 内再次单击 → 重建整个首页信息流（保留既有行为）。
+   */
   private onTabBarClick(index: number): void {
     if (index !== WeiboTab.Home) {
       this.lastHomeTabTapAt = 0;
       return;
     }
     const now: number = Date.now();
-    const withinDoubleTapWindow: boolean = now - this.lastHomeTabTapAt <= HOME_TAB_DOUBLE_TAP_WINDOW_MS;
-    if (this.selectedTab === WeiboTab.Home && withinDoubleTapWindow) {
+    // 从其它 tab 切回首页时 selectedTab 仍是旧值，这一下只用于切换，不计入双击窗口
+    if (this.selectedTab !== WeiboTab.Home) {
+      this.lastHomeTabTapAt = 0;
+      return;
+    }
+    const withinDoubleTapWindow: boolean = this.lastHomeTabTapAt > 0
+      && now - this.lastHomeTabTapAt <= HOME_TAB_DOUBLE_TAP_WINDOW_MS;
+    if (withinDoubleTapWindow) {
       this.homeFeedRebuildVersion++;
       this.lastHomeTabTapAt = 0;
       return;
     }
+    this.homeScrollTopTrigger++;
     this.lastHomeTabTapAt = now;
   }
 
@@ -639,6 +651,8 @@ struct Index {
             bottomInset: 128,
             animationTrigger: this.page1Enter,
             exitTrigger: this.page1Exit,
+            scrollTopTrigger: this.homeScrollTopTrigger,
+            isActive: this.homeMode === WeiboTimelineMode.Recommend,
             onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
             onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName)
           })
@@ -654,6 +668,8 @@ struct Index {
             bottomInset: 128,
             animationTrigger: this.page1Enter,
             exitTrigger: this.page1Exit,
+            scrollTopTrigger: this.homeScrollTopTrigger,
+            isActive: this.homeMode === WeiboTimelineMode.Following,
             onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
             onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName)
           })

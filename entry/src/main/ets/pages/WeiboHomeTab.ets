@@ -70,6 +70,10 @@ export struct WeiboHomeTab {
   @Prop showHeader: boolean = true;
   @Prop @Watch('onEnter') animationTrigger: number = 0;
   @Prop @Watch('onExit') exitTrigger: number = 0;
+  /** 外部请求平滑回到列表顶端；值递增一次即消费一次（底部导航单击首页 Tab）。 */
+  @Prop @Watch('onScrollTopRequest') scrollTopTrigger: number = 0;
+  /** 当前是否为屏幕上可见的那条信息流；隐藏的一条不响应回顶请求。 */
+  @Prop isActive: boolean = true;
   /** Reserved in the scroll content, so floating host chrome never shrinks the scroll viewport. */
   @Prop topInset: number = 0;
   @Prop bottomInset: number = 116;
@@ -100,6 +104,9 @@ export struct WeiboHomeTab {
   private cardAreas: Map<string, CardArea> = new Map();
   /** Scroll 视口在窗口坐标系中的顶边，作为锚点偏移的参照。 */
   private scrollViewportY: number = 0;
+  /** Scroll 视口高度与信息流内容高度；用于首屏不满一屏时的自动补页判定。 */
+  private scrollViewportHeight: number = 0;
+  private timelineContentHeight: number = 0;
   /** 待恢复的锚点帖子 ID；其首次 onAreaChange 时应用一次滚动。 */
   private positionRestoring: string = '';
   private restoreRelative: number = 0;
@@ -261,6 +268,7 @@ export struct WeiboHomeTab {
       // 下拉刷新指示只在显式刷新任务结束后收起，包括失败路径
       if (explicit) { this.pullRefreshing = false; }
     }
+    this.scheduleAutoFill();
   }
 
   private async loadMore(): Promise<void> {
@@ -270,6 +278,24 @@ export struct WeiboHomeTab {
       this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
       this.feed.errorMessage = '';
     }
+    this.scheduleAutoFill();
+  }
+
+  /**
+   * 无缝加载的兜底：首屏内容不足一屏时列表根本滚不动，onReachEnd 永不触发，
+   * 因此在每次载入结束后延迟一帧比对内容与视口高度，没铺满就再续一页。
+   * 终止性由 FeedStore 保证：结果没有增长时 hasMore 会被置为 false，最多多请求一次。
+   */
+  private scheduleAutoFill(): void {
+    setTimeout((): void => { this.autoFillIfViewportNotFilled(); }, 0);
+  }
+
+  private autoFillIfViewportNotFilled(): void {
+    if (!this.feed.hasMore || this.feed.loadingMore || this.feed.refreshing) { return; }
+    if (this.feed.state !== FeedLoadState.Success || this.feed.posts.length === 0) { return; }
+    if (this.scrollViewportHeight <= 0 || this.timelineContentHeight <= 0) { return; }
+    if (this.timelineContentHeight > this.scrollViewportHeight + 8) { return; }
+    this.loadMore();
   }
 
   /** 缓存恢复后记录待恢复锚点，由锚点卡片的首次 onAreaChange 触发滚动。 */
@@ -300,6 +326,20 @@ export struct WeiboHomeTab {
     const targetY: number = this.scrollViewportY + this.restoreRelative;
     const currentY: number = this.timelineScroller.currentOffset().yOffset;
     this.timelineScroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, currentY + area.y - targetY) });
+  }
+
+  /** 底部导航单击当前首页 Tab：平滑回到列表顶端。 */
+  private onScrollTopRequest(): void {
+    if (this.scrollTopTrigger <= 0 || !this.isActive) { return; }
+    try {
+      this.timelineScroller.scrollTo({
+        xOffset: 0,
+        yOffset: 0,
+        animation: { duration: 320, curve: Curve.EaseOut }
+      });
+    } catch (error) {
+      // 视口尚未完成布局时忽略；下一次单击会重试
+    }
   }
 
   /** 滚动停止/页面销毁时保存阅读位置：第一个底边越过视口顶边的帖子即锚点。 */
@@ -445,21 +485,30 @@ export struct WeiboHomeTab {
     })
   }
 
+  /**
+   * 无缝加载的状态位：分页由滚到底自动触发，这里只在请求中或已到末页时占位，
+   * 其余时刻不占高度，避免打断滚动手感。
+   */
   @Builder
-  LoadMoreButton(): void {
-    Button(this.feed.loadingMore ? $r('app.string.weibo_loading') : $r('app.string.weibo_timeline_load_more'))
+  TimelineFooter(): void {
+    if (this.feed.loadingMore) {
+      Row({ space: Spacing.sm }) {
+        LoadingProgress().width(18).height(18)
+        Text($r('app.string.weibo_loading'))
+          .fontSize(fs(12, this.fontScale))
+          .fontColor(Theme.textSecondary(this.isDark))
+      }
       .width('100%')
-      .height(42)
-      .fontSize(fs(13, this.fontScale))
-      .backgroundColor(Theme.sheetGlass(this.isDark))
-      .fontColor(Theme.textPrimary(this.isDark))
-      .backgroundBlurStyle(BlurStyle.Regular, { scale: 0.85 })
-      .border({ width: 0.5, color: Theme.manualGlassBorder() })
-      .shadow(Theme.glassShadowStyle())
-      .backgroundEffect(ImmBlur.cardAction())
-      .systemMaterial(ImmMaterial.cardAction())
-      .borderRadius(Radius.full)
-      .onClick((): void => { this.loadMore(); })
+      .height(48)
+      .justifyContent(FlexAlign.Center)
+    } else if (!this.feed.hasMore) {
+      Text($r('app.string.weibo_timeline_no_more'))
+        .width('100%')
+        .height(48)
+        .textAlign(TextAlign.Center)
+        .fontSize(fs(12, this.fontScale))
+        .fontColor(Theme.textSecondary(this.isDark))
+    }
   }
 
   @Builder
@@ -506,9 +555,6 @@ export struct WeiboHomeTab {
           .width('100%')
           .onAreaChange((_oldValue: Area, newValue: Area): void => { this.onCardAreaChange(post, newValue); })
         }, (post: WeiboPost): string => post.id)
-        if (this.feed.hasMore) {
-          this.LoadMoreButton()
-        }
       }
       .width('100%')
     } else {
@@ -529,9 +575,15 @@ export struct WeiboHomeTab {
           } else {
             this.Timeline()
           }
+          if (this.feed.state === FeedLoadState.Success) {
+            this.TimelineFooter()
+          }
         }
         .width('100%')
         .padding({ left: Spacing.lg, right: Spacing.lg, top: this.topInset, bottom: this.bottomInset })
+        .onAreaChange((_oldValue: Area, newValue: Area): void => {
+          this.timelineContentHeight = newValue.height as number;
+        })
       }
       .layoutWeight(1)
       .width('100%')
@@ -540,12 +592,14 @@ export struct WeiboHomeTab {
       .edgeEffect(EdgeEffect.Spring)
       .onAreaChange((_oldValue: Area, newValue: Area): void => {
         this.scrollViewportY = newValue.globalPosition.y as number;
+        this.scrollViewportHeight = newValue.height as number;
       })
       .onScrollStop((): void => {
         this.saveReadingPosition();
       })
       .onReachEnd((): void => {
-        if (this.feed.state === FeedLoadState.Success && this.waterfallColumns() > 1) {
+        // 单列与多列统一走自动续页；重复触发由 FeedStore 的 loadingMore/hasMore 守卫吸收
+        if (this.feed.state === FeedLoadState.Success) {
           this.loadMore();
         }
       })
