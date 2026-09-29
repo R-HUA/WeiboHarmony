@@ -22,6 +22,9 @@ export class WeiboService {
   private recentPost: WeiboPost | null = null;
   private commentCache: ResponseCache<WeiboCommentsPage> = new ResponseCache<WeiboCommentsPage>();
   private pendingLikes: Set<string> = new Set();
+  private pendingFollows: Set<string> = new Set();
+  private following: Map<string, boolean> = new Map();
+  private relationshipRevision: number = 0;
   /**
    * 长文全文缓存（postId -> 全文 HTML）。
    * 一条长文会被列表卡片（点「展开」）和详情页先后索要，缓存住避免重复请求。
@@ -36,6 +39,9 @@ export class WeiboService {
       PostEntities.shared().clear();
       this.commentCache = new ResponseCache<WeiboCommentsPage>();
       this.pendingLikes.clear();
+      this.pendingFollows.clear();
+      this.following.clear();
+      this.relationshipRevision++;
       this.longTextCache.clear();
       this.longTextPending.clear();
     });
@@ -54,6 +60,8 @@ export class WeiboService {
   }
 
   async fetchUserProfile(userId: string): Promise<WeiboUser> {
+    const generation: number = WeiboAuthManager.getInstance().getGeneration();
+    const revision: number = this.relationshipRevision;
     const escapedUserId: string = encodeURIComponent(userId.trim());
     const raw: string = await this.get(`https://m.weibo.cn/api/container/getIndex?containerid=100505${escapedUserId}`);
     const response: WeiboApiResponse = this.parseResponse(raw);
@@ -61,7 +69,47 @@ export class WeiboService {
     if (user === undefined) {
       throw new Error('微博没有返回用户资料');
     }
-    return this.toUser(user);
+    const profile: WeiboUser = this.toUser(user);
+    if (generation !== WeiboAuthManager.getInstance().getGeneration()) { throw new Error('请求已取消'); }
+    if (revision === this.relationshipRevision && !this.pendingFollows.has(profile.id)) {
+      if (profile.following !== undefined) { this.following.set(profile.id, profile.following); }
+      else { this.following.delete(profile.id); }
+    } else { profile.following = this.following.get(profile.id); }
+    return profile;
+  }
+
+  getFollowing(userId: string): boolean | undefined { return this.following.get(userId); }
+
+  /** Only called by the profile's explicit follow/unfollow action. */
+  async setFollowing(userId: string, following: boolean): Promise<void> {
+    const id: string = userId.trim();
+    const auth: WeiboAuthManager = WeiboAuthManager.getInstance();
+    const cookie: string = this.requireAccountCookie(true);
+    if (!/^[1-9][0-9]*$/.test(id) || id === auth.getAccountId()) { throw new Error('无法关注该用户'); }
+    if (this.pendingFollows.has(id)) { throw new Error('关注操作正在处理中'); }
+    const generation: number = auth.getGeneration();
+    const form: rcp.Form = following ? new rcp.Form({ friend_uid: id }) : new rcp.Form({ uid: id });
+    form.keys = following ? ['friend_uid'] : ['uid'];
+    const endpoint: string = following ? 'https://weibo.com/ajax/friendships/create'
+      : 'https://weibo.com/ajax/friendships/destory';
+    this.pendingFollows.add(id);
+    this.relationshipRevision++;
+    try {
+      const raw: string = await WeiboHttpClient.postForm(endpoint, cookie, form);
+      this.parseResponse(raw);
+      if (generation !== auth.getGeneration()) { throw new Error('请求已取消'); }
+      this.following.set(id, following);
+    } catch (error) {
+      // A timeout can have committed remotely. Require a fresh read before the next toggle.
+      if (generation === auth.getGeneration()) { this.following.delete(id); }
+      throw new Error((error as Error).message ?? '关注操作失败');
+    } finally {
+      if (generation === auth.getGeneration()) {
+        this.pendingFollows.delete(id);
+        this.relationshipRevision++;
+        AppStorage.setOrCreate<number>('weiboRelationshipTick', (AppStorage.get<number>('weiboRelationshipTick') ?? 0) + 1);
+      }
+    }
   }
 
   /** Resolve the profile, including the HD avatar, for the account in the saved Cookie. */
@@ -261,14 +309,18 @@ export class WeiboService {
     form.keys = ['id'];
     const endpoint: string = like
       ? 'https://weibo.com/ajax/statuses/setLike'
-      : 'https://weibo.com/ajax/statuses/cancelLike';
+      : 'https://weibo.com/ajax/statuses/destroyLike';
     if (this.pendingLikes.has(id)) { throw new Error('点赞请求正在处理中'); }
+    const generation: number = WeiboAuthManager.getInstance().getGeneration();
     this.pendingLikes.add(id);
     try {
       const raw: string = await WeiboHttpClient.postForm(endpoint, cookie, form);
       this.parseResponse(raw);
+      if (generation !== WeiboAuthManager.getInstance().getGeneration()) { throw new Error('请求已取消'); }
       PostEntities.shared().confirmLike(id, like);
-    } finally { this.pendingLikes.delete(id); }
+    } finally {
+      if (generation === WeiboAuthManager.getInstance().getGeneration()) { this.pendingLikes.delete(id); }
+    }
   }
 
   /** Publish one user-authored comment after the user presses Send. */

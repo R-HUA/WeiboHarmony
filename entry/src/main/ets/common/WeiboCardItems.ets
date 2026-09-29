@@ -8,6 +8,7 @@
 import { WeiboPost } from '../model/WeiboModel';
 import { RichKind, RichSegment, appendExpandAction, parseWeiboRich, stripExpandMarker } from './RichText';
 import { ThreadItemData } from '../components/CommonComponents';
+import { ownVideoUrl } from './WeiboMedia';
 
 /**
  * 微博正文 HTML -> 可点击分段。
@@ -54,13 +55,9 @@ export function buildWeiboThreadItem(post: WeiboPost): ThreadItemData {
   const displayRepost: RichSegment[] = repostBody.length === 0
     ? repostBody
     : (repostLong ? appendExpandAction(repostBody, repost!.id) : stripExpandMarker(repostBody));
-  // 转发原文的媒体，图与视频要**分开判定**（真机实测 2026-09-28）：
-  //   · 图：桌面接口不会把转发原文的图挂到当前帖上——否则列表里早就显示了，
-  //     所以有图就补渲染，不会被重复。
-  //   · 视频：接口会把转发原文的视频同时挂到当前帖上（同一条视频会出现两次），
-  //     所以只有在当前帖自己没有视频时才补渲染。
+  // 重复视频保留在原帖引述块内；不同视频各自保留。
   const repostPictures: string[] = repost === null ? [] : repost.pictures;
-  const repostVideoUrl: string = repost !== null && post.videoUrl.length === 0 ? repost.videoUrl : '';
+  const repostVideoUrl: string = repost !== null ? repost.videoUrl : '';
   const repostVideoCover: string = repostVideoUrl.length > 0 && repost !== null ? repost.videoCoverUrl : '';
   return {
     tid: post.id,
@@ -80,7 +77,7 @@ export function buildWeiboThreadItem(post: WeiboPost): ThreadItemData {
     abstract: repost === null ? '' : repost.text,
     firstImage: firstImage,
     images: post.pictures,
-    videoUrl: post.videoUrl,
+    videoUrl: ownVideoUrl(post),
     videoCoverUrl: post.videoCoverUrl,
     createTime: post.createdAt,
     isTop: false,

@@ -17,6 +17,18 @@ export class WeiboMapper {
     for (const value of values) { if (value !== undefined && value.trim().length > 0) { return value; } }
     return '';
   }
+  private static videoStream(media: WeiboVideoMediaInfoJson | undefined, urls: WeiboVideoUrlsJson | undefined): string {
+    return WeiboMapper.firstUrl([media?.stream_url_hd, media?.stream_url,
+      urls?.mp4_1080p_60fps, urls?.mp4_1080p_mp4, urls?.mp4_hd_mp4, media?.mp4_hd_mp4,
+      urls?.mp4_720p_mp4, media?.mp4_720p_mp4, urls?.mp4_sd_mp4, urls?.mp4_ld_mp4]);
+  }
+  private static mixStream(data: WeiboMixMediaDataJson | undefined): string {
+    if (data === undefined) { return ''; }
+    return WeiboMapper.firstUrl([
+      data.media_info === undefined ? '' : WeiboMapper.videoStream(WeiboMapper.toVideoMediaInfo(data.media_info), undefined),
+      WeiboMapper.videoStream(data.page_info?.media_info, data.page_info?.urls),
+      data.media_url, data.default_media_url]);
+  }
   /**
    * 列表档改写：微博图床（*.sinaimg.cn）的路径尺寸段可替换为任意档位，
    * 统一改写为 wap720 中图。原图档（orj1080/large 可达数 MB）在信息流弱网下
@@ -50,7 +62,7 @@ export class WeiboMapper {
   private static firstMixVideoData(info: WeiboMixMediaInfoJson | undefined): WeiboMixMediaDataJson | undefined {
     const items: WeiboMixMediaItemJson[] = info?.items ?? [];
     for (let index: number = 0; index < items.length; index++) {
-      if (WeiboMapper.isMixVideoItem(items[index])) {
+      if (WeiboMapper.isMixVideoItem(items[index]) && WeiboMapper.mixStream(items[index].data).length > 0) {
         return items[index].data;
       }
     }
@@ -62,7 +74,7 @@ export class WeiboMapper {
     if (data === undefined) { return ''; }
     return WeiboMapper.firstUrl([
       // 抓包：mix 视频项里 page_pic 是**字符串**（不是 {url} 对象），两种形态都要收
-      typeof data.page_pic === 'string' ? data.page_pic : undefined,
+      typeof data.page_pic === 'string' ? data.page_pic : data.page_pic?.url,
       data.page_info?.page_pic?.url,
       data.page_info?.pic_info?.pic_big?.url,
       data.pic_info?.pic_big?.url,
@@ -95,7 +107,7 @@ export class WeiboMapper {
     const list: WeiboMixedMediaJson[] = info?.media_list ?? [];
     for (let index: number = 0; index < list.length; index++) {
       const item: WeiboMixedMediaJson = list[index];
-      if (item.video_info !== undefined) {
+      if (item.video_info !== undefined && WeiboMapper.videoStream(item.video_info.media_info, item.video_info.urls).length > 0) {
         return item.video_info;
       }
     }
@@ -130,6 +142,8 @@ export class WeiboMapper {
       statusesCount: statusesCount,
       verified: source.verified ?? false,
       verifiedReason: source.verified_reason ?? '',
+      following: source.following === true || source.following === 1 ? true
+        : (source.following === false || source.following === 0 ? false : undefined),
     };
   }
 
@@ -179,25 +193,22 @@ export class WeiboMapper {
     //   ③ 老拼法 mixed_media_info.media_list 的 video_info。
     const mixVideo: WeiboMixMediaDataJson | undefined = WeiboMapper.firstMixVideoData(source.mix_media_info);
     const mixedVideo: WeiboMixedMediaVideoJson | undefined = WeiboMapper.firstMixedVideo(source.mixed_media_info);
-    const mixMediaInfo: WeiboMixMediaVideoJson | undefined = mixVideo?.media_info;
-    const mediaInfo: WeiboVideoMediaInfoJson | undefined =
-      (mixMediaInfo === undefined ? undefined : WeiboMapper.toVideoMediaInfo(mixMediaInfo))
-        ?? pageInfo?.media_info
-        ?? mixedVideo?.media_info;
-    const videoUrls: WeiboVideoUrlsJson | undefined = pageInfo?.urls ?? mixedVideo?.urls;
-    const videoUrl: string = WeiboMapper.firstUrl([
-      mediaInfo?.stream_url_hd, mediaInfo?.stream_url,
-      videoUrls?.mp4_1080p_60fps, videoUrls?.mp4_1080p_mp4, videoUrls?.mp4_hd_mp4,
-      mediaInfo?.mp4_hd_mp4, videoUrls?.mp4_720p_mp4, mediaInfo?.mp4_720p_mp4,
-      videoUrls?.mp4_sd_mp4, videoUrls?.mp4_ld_mp4, source.video_url
-    ]);
+    const mixStream: string = WeiboMapper.mixStream(mixVideo);
+    const pageStream: string = WeiboMapper.videoStream(pageInfo?.media_info, pageInfo?.urls);
+    const mixedStream: string = WeiboMapper.videoStream(mixedVideo?.media_info, mixedVideo?.urls);
+    const videoUrl: string = WeiboMapper.firstUrl([mixStream, pageStream, mixedStream, source.video_url]);
+    const videoId: string = mixStream.length > 0
+      ? WeiboMapper.firstUrl([mixVideo?.object_id, mixVideo?.page_id, mixVideo?.page_info?.object_id, mixVideo?.page_info?.page_id])
+      : (pageStream.length > 0 ? WeiboMapper.firstUrl([pageInfo?.object_id, pageInfo?.page_id]) : '');
     // 视频封面：移动端在 page_pic / thumbnail_pic；桌面端关注流常缺失这两个字段，
     // 依次从 media_info.image、pic_info.pic_big、顶层 bmiddle_pic 兜底，避免黑色封面。
     const videoCoverUrl: string = WeiboMapper.listPicture(WeiboMapper.firstUrl([
-      WeiboMapper.mixVideoCover(mixVideo),
+      mixStream.length > 0 ? WeiboMapper.mixVideoCover(mixVideo) : '',
+      mixStream.length === 0 && pageStream.length === 0 && mixedStream.length > 0
+        ? WeiboMapper.firstUrl([mixedVideo?.page_pic?.url, mixedVideo?.media_info?.image]) : '',
       pageInfo?.page_pic?.url,
       mixedVideo?.page_pic?.url,
-      mediaInfo?.image,
+      pageInfo?.media_info?.image,
       pageInfo?.pic_info?.pic_big?.url,
       source.thumbnail_pic,
       source.bmiddle_pic,
@@ -219,6 +230,7 @@ export class WeiboMapper {
       pictures: pictures,
       previewPictures: previewPictures,
       videoUrl: videoUrl,
+      videoId: videoId,
       videoCoverUrl: videoCoverUrl,
       createdAt: formatWeiboTime(source.created_at ?? ''),
       source: stripHtml(source.source ?? ''),

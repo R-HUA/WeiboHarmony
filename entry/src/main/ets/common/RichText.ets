@@ -44,7 +44,7 @@ const PLAIN_URL: RegExp = /https?:\/\/[^\s\u4e00-\u9fa5，。；：！？、）�
 const URL_TAIL_TRIM: RegExp = /[.,;:!?)\]]+$/;
 
 function attrValue(attrs: string, name: string): string {
-  const pattern: RegExp = new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i');
+  const pattern: RegExp = new RegExp(`(?:^|\\s)${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i');
   const matched: RegExpExecArray | null = pattern.exec(attrs);
   if (matched === null) {
     return '';
@@ -65,15 +65,16 @@ function plainText(raw: string): string {
 }
 
 function uidFromHref(href: string): string {
-  let matched: RegExpExecArray | null = /\/u\/(\d+)/.exec(href);
-  if (matched !== null) {
-    return matched[1];
+  const appLink: RegExpExecArray | null = /^sinaweibo:\/\/userinfo\?(?:[^#]*&)?uid=(\d+)(?:&|$)/i.exec(href);
+  if (appLink !== null) { return appLink[1]; }
+  const webLink: RegExpExecArray | null = /^https?:\/\/(?:(?:www|m)\.)?weibo\.(?:com|cn)(\/[^#]*)?(?:#.*)?$/i.exec(normaliseUrl(href));
+  if (webLink === null) { return ''; }
+  const path: string = webLink[1] ?? '';
+  if (path.startsWith('/profile?')) {
+    const queryUid: RegExpExecArray | null = /[?&]uid=(\d+)(?:&|$)/.exec(path);
+    if (queryUid !== null) { return queryUid[1]; }
   }
-  matched = /[?&]uid=(\d+)/i.exec(href);
-  if (matched !== null) {
-    return matched[1];
-  }
-  matched = /sinaweibo:\/\/userinfo\?uid=(\d+)/i.exec(href);
+  const matched: RegExpExecArray | null = /^\/(?:u\/|profile\/)?(\d+)\/?(?:[?#]|$)/.exec(path);
   return matched === null ? '' : matched[1];
 }
 
@@ -98,6 +99,7 @@ function normaliseUrl(href: string): string {
   if (value.startsWith('//')) {
     return `https:${value}`;
   }
+  if (value.startsWith('/')) { return 'https://m.weibo.cn' + value; }
   return value;
 }
 
@@ -113,16 +115,39 @@ function pushText(out: RichSegment[], raw: string): void {
   while (matched !== null) {
     const start: number = matched.index;
     if (start > cursor) {
-      appendText(out, text.substring(cursor, start));
+      appendMentions(out, text.substring(cursor, start));
     }
     const url: string = matched[0].replace(URL_TAIL_TRIM, '');
     appendLink(out, url, url);
+    appendText(out, matched[0].substring(url.length));
     cursor = start + matched[0].length;
     matched = PLAIN_URL.exec(text);
   }
   if (cursor < text.length) {
-    appendText(out, text.substring(cursor));
+    appendMentions(out, text.substring(cursor));
   }
+}
+
+/** Parse unlinked mentions without inventing a UID. */
+function appendMentions(out: RichSegment[], text: string): void {
+  const pattern: RegExp = /(^|[^A-Za-z0-9_.@])(@[A-Za-z0-9_\-\u3400-\u9fff]+)/g;
+  let cursor: number = 0;
+  let match: RegExpExecArray | null = pattern.exec(text);
+  while (match !== null) {
+    const start: number = match.index + match[1].length;
+    appendText(out, text.substring(cursor, start));
+    out.push({ kind: RichKind.Mention, text: match[2], target: '', imageUrl: '' });
+    cursor = start + match[2].length;
+    match = pattern.exec(text);
+  }
+  appendText(out, text.substring(cursor));
+}
+
+/** Only remove redundant labelled video links when a player is present. */
+export function readingSegments(segments: RichSegment[], hasInlineVideo: boolean): RichSegment[] {
+  if (!hasInlineVideo) { return segments; }
+  return segments.filter((segment: RichSegment): boolean =>
+    !(segment.kind === RichKind.Link && /(?:的微博视频|微博视频|秒拍视频)$/.test(segment.text.trim())));
 }
 
 function appendText(out: RichSegment[], text: string): void {
@@ -167,7 +192,11 @@ function consumeSpecial(source: string, at: number, out: RichSegment[]): number 
       return anchor[0].length;
     }
     if (href.length === 0) {
-      appendText(out, inner);
+      appendMentions(out, inner);
+      return anchor[0].length;
+    }
+    if (inner.startsWith('@') && /^https?:\/\/(?:(?:www|m)\.)?weibo\.(?:com|cn)\/n\//i.test(normaliseUrl(href))) {
+      out.push({ kind: RichKind.Mention, text: inner, target: '', imageUrl: '' });
       return anchor[0].length;
     }
     const uid: string = uidFromHref(href);
@@ -179,7 +208,7 @@ function consumeSpecial(source: string, at: number, out: RichSegment[]): number 
       out.push({ kind: RichKind.Topic, text: inner, target: topicKeyword(inner), imageUrl: '' });
       return anchor[0].length;
     }
-    if (/^https?:/i.test(href) || href.startsWith('//')) {
+    if (/^https?:/i.test(href) || href.startsWith('/')) {
       appendLink(out, inner, normaliseUrl(href));
       return anchor[0].length;
     }

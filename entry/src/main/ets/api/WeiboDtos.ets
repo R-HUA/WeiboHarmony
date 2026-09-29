@@ -94,6 +94,7 @@ export interface WeiboUserJson {
   statuses_count?: string | number;
   verified?: boolean;
   verified_reason?: string;
+  following?: boolean | number;
 }
 
 export interface WeiboPictureJson {
@@ -236,6 +237,8 @@ export interface WeiboPagePicInfoJson {
 }
 
 export interface WeiboPageInfoJson {
+  object_id?: string;
+  page_id?: string;
   type?: string;
   urls?: WeiboVideoUrlsJson;
   media_info?: WeiboVideoMediaInfoJson;

@@ -33,7 +33,6 @@ const TAG: string = 'TiebaImgCard';
 const MAX_URL_LOG: number = 120;
 
 /** 单列视频区高度（vp）。视频帖没走图文混排时用它撑满一行。 */
-const VIDEO_ROW_HEIGHT: number = 220;
 
 function shortUrl(url: string): string {
   return url.length > MAX_URL_LOG ? url.substring(0, MAX_URL_LOG) + '...' : url;
@@ -745,6 +744,7 @@ export struct ThreadCard {
           Column() {
             RichTextView({
               segments: this.richBody(),
+              hasInlineVideo: (this.getItem().videoUrl ?? '').length > 0,
               isDark: isDarkMode(),
               fontSize: 16,
               lineHeight: 24,
@@ -781,31 +781,35 @@ export struct ThreadCard {
 
         // 转发原文：官方是「@原作者：原文」的引述块（浅底、与正文同字号），
         // 不是正文下面一段更小的灰字——那样看起来跟正文连成一体，分不清哪段是转发。
-        if (this.hasRichRepost()) {
+        if (this.hasRichRepost() || this.hasRepostMedia()) {
           Column() {
-            RichTextView({
-              segments: this.richRepostSegments(),
-              isDark: isDarkMode(),
-              fontSize: 15,
-              lineHeight: 23,
-              secondary: true,
-              fontScale: this.fontScale,
-              onMentionTap: (uid: string, name: string): void => { this.onMentionTap(uid, name); },
-              onTopicTap: (topic: string): void => { this.onTopicTap(topic); },
-              onLinkTap: (url: string): void => { this.onLinkTap(url); },
-              onExpandTap: (target: string): void => { this.expandLongText(target); }
-            })
-            // 转发原文自带图/视频时，缩略图渲染在引述块内部——官方就是这样，
-            // 之前只渲染了当前帖的媒体，转发原文的图整块丢失。
-            if (this.hasRepostMedia()) {
-              this.RepostMedia()
+            Column({ space: 8 }) {
+              if (this.hasRichRepost()) {
+                RichTextView({
+                  segments: this.richRepostSegments(),
+                  hasInlineVideo: (this.getItem().repostVideoUrl ?? '').length > 0,
+                  isDark: isDarkMode(),
+                  fontSize: 15,
+                  lineHeight: 23,
+                  secondary: true,
+                  fontScale: this.fontScale,
+                  onMentionTap: (uid: string, name: string): void => { this.onMentionTap(uid, name); },
+                  onTopicTap: (topic: string): void => { this.onTopicTap(topic); },
+                  onLinkTap: (url: string): void => { this.onLinkTap(url); },
+                  onExpandTap: (target: string): void => { this.expandLongText(target); }
+                })
+              }
+              if (this.hasRepostMedia()) {
+                this.RepostMedia()
+              }
             }
+            .width('100%')
+            .padding(10)
+            .backgroundColor(Theme.bgSurface(isDarkMode()))
+            .borderRadius(Radius.md)
           }
           .width('100%')
-          .padding(10)
-          .margin({ left: 16, right: 16, top: 10 })
-          .backgroundColor(Theme.bgSurface(isDarkMode()))
-          .borderRadius(Radius.md)
+          .padding({ left: 16, right: 16, top: 10 })
         }
 
         // ========== 媒体区 ==========
@@ -823,7 +827,6 @@ export struct ThreadCard {
                 this.VideoPlayer()
               }
               .width('100%')
-              .height(VIDEO_ROW_HEIGHT)
               .borderRadius(Radius.md)
               .clip(true)
             }
@@ -1224,4 +1227,3 @@ export struct ThreadCard {
         }
   }
 }
-

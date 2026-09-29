@@ -29,6 +29,7 @@ export class PostEntities {
       pictures: post.pictures,
       previewPictures: post.previewPictures,
       videoUrl: post.videoUrl,
+      videoId: post.videoId,
       videoCoverUrl: post.videoCoverUrl,
       createdAt: post.createdAt,
       source: post.source,

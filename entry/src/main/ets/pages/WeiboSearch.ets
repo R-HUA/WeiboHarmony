@@ -6,13 +6,15 @@ import { SearchStore, SearchLoadState } from '../store/SearchStore';
 import { ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode } from '../common/Theme';
 import { buildWeiboThreadItem } from '../common/WeiboCardItems';
 import { requestTopicSearch } from '../common/TopicRequest';
-import { openExternalUrl } from '../common/ExternalLink';
+import { openWeiboLink } from '../common/WeiboLinkNavigation';
+import { setWeiboPostLike, shareWeiboPost } from '../common/WeiboPostActions';
 
 type TabAnimationDirection = 'left' | 'right';
 
 /** Weibo search with live suggestions and posts from the mobile search container. */
 @Component
 export struct WeiboSearch {
+  @Consume('weiboNavStack') weiboNavStack: NavPathStack;
   pageScroller: Scroller = new Scroller();
   @Prop topInset: number = 64;
   @Prop @Watch('onEnter') animationTrigger: number = 0;
@@ -113,7 +115,7 @@ export struct WeiboSearch {
 
   /** 正文里的网页链接：交给系统浏览器（见 common/ExternalLink）。 */
   private openLink(url: string): void {
-    openExternalUrl(this.getUIContext(), url);
+    openWeiboLink(this.getUIContext(), this.weiboNavStack, url);
   }
 
   private openUserProfile(userId: string, userName: string): void {
@@ -188,6 +190,8 @@ export struct WeiboSearch {
                 item: this.toThreadCard(post),
                 onTap: (_id: string): void => { this.openPost(post); },
                 onComment: (_id: string): void => { this.openPost(post); },
+                onLike: (_id: string, _postId: string, liked: boolean): void => { setWeiboPostLike(this.getUIContext(), post, liked); },
+                onShare: (): void => { shareWeiboPost(this.getUIContext(), post); },
                 onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },
                 // 正文里的 @用户名/#话题#/网页链接：各自走自己的跳转，不落到整卡详情
                 onMentionTap: (uid: string, name: string): void => { this.openUserProfile(uid, name); },

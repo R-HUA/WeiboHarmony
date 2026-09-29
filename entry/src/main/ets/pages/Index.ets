@@ -948,10 +948,12 @@ struct Index {
   }
 
   private async openMyPosts(): Promise<void> {
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     let userId: string = this.accountProfile === null ? '' : this.accountProfile.id;
     if (userId.length === 0 && this.cookieConfigured) {
       try {
         const account: WeiboUser = await WeiboService.getInstance().fetchCurrentUserProfile();
+        if (session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
         this.accountProfile = account;
         userId = account.id;
       } catch (error) {
@@ -961,12 +963,7 @@ struct Index {
       this.getUIContext().getPromptAction().showToast({ message: '请先登录并完成账号资料读取' });
       return;
     }
-    this.getUIContext().getRouter().pushUrl({
-      url: 'pages/WeiboFeed',
-      params: { userId: userId, ownProfile: 'true' }
-    }).catch(() => {
-      this.getUIContext().getPromptAction().showToast({ message: '我的微博打开失败，请稍后重试' });
-    });
+    this.openUserProfile(userId, this.accountProfile?.screenName ?? '');
   }
 
   private openFollowing(): void {

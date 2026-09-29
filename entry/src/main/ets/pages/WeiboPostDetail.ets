@@ -1,4 +1,5 @@
 import { ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
+import { ownVideoUrl } from '../common/WeiboMedia';
 import { InlineVideo } from '../components/InlineVideo';
 import { PictureGallery } from '../components/PictureGallery';
 import { PostEntities } from '../store/PostEntities';
@@ -9,6 +10,7 @@ import { RichSegment, parseWeiboRich, stripExpandMarker } from '../common/RichTe
 import { RichTextView } from '../components/RichText';
 import { MixedMediaTiles, MIXED_MEDIA_MAX_PICTURES } from '../components/MediaTiles';
 import { requestTopicSearch } from '../common/TopicRequest';
+import { openWeiboLink } from '../common/WeiboLinkNavigation';
 import { openExternalUrl } from '../common/ExternalLink';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService } from '../service/WeiboService';
@@ -278,7 +280,7 @@ export struct WeiboPostDetail {
 
   /** 网页链接：交系统浏览器（见 common/ExternalLink）。 */
   private openLink(url: string): void {
-    openExternalUrl(this.getUIContext(), url);
+    openWeiboLink(this.getUIContext(), this.weiboNavStack, url);
   }
 
   private async loadComments(append: boolean = false): Promise<void> {
@@ -662,15 +664,15 @@ export struct WeiboPostDetail {
 
   /** 该帖是否同时带图和视频，且图不超过混排上限。 */
   private useMixedMediaLayout(post: WeiboPost): boolean {
-    return post.videoUrl.length > 0
+    return ownVideoUrl(post).length > 0
       && post.pictures.length > 0
       && post.pictures.length <= MIXED_MEDIA_MAX_PICTURES;
   }
 
   @Builder
   VideoPlayer(currentPost: WeiboPost) {
-    if (currentPost.videoUrl.length > 0) {
-      InlineVideo({ url: currentPost.videoUrl, cover: currentPost.videoCoverUrl })
+    if (ownVideoUrl(currentPost).length > 0) {
+      InlineVideo({ url: ownVideoUrl(currentPost), cover: currentPost.videoCoverUrl })
     }
   }
 
@@ -693,6 +695,7 @@ export struct WeiboPostDetail {
       .width('100%')
       RichTextView({
         segments: this.repostSegments(repost),
+        hasInlineVideo: repost.videoUrl.length > 0,
         isDark: this.isDark,
         fontSize: 14,
         lineHeight: 21,
@@ -703,10 +706,10 @@ export struct WeiboPostDetail {
       })
         .width('100%')
       if (repost.isLongText === true && this.repostLongTextRaw.length === 0) {
-        Button('查看转发原文').onClick((): void => { this.openLink(this.postShareUrl(repost)); }, 8)
+        Button('查看转发原文').onClick((): void => { openExternalUrl(this.getUIContext(), this.postShareUrl(repost)); }, 8)
       }
-      if (repost.videoUrl.length > 0 && this.post?.videoUrl !== repost.videoUrl) {
-        this.VideoPlayer(repost)
+      if (repost.videoUrl.length > 0) {
+        InlineVideo({ url: repost.videoUrl, cover: repost.videoCoverUrl })
       }
       if (repost.pictures.length > 0) {
         // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
@@ -758,6 +761,7 @@ export struct WeiboPostDetail {
       .width('100%')
       RichTextView({
         segments: this.postSegments(currentPost),
+        hasInlineVideo: ownVideoUrl(currentPost).length > 0,
         isDark: this.isDark,
         fontSize: 17,
         lineHeight: 27,
@@ -768,14 +772,14 @@ export struct WeiboPostDetail {
       })
         .width('100%')
       if (currentPost.isLongText === true && this.longTextRaw.length === 0) {
-        Button('查看微博原文').onClick((): void => { this.openLink(this.postShareUrl(currentPost)); }, 8)
+        Button('查看微博原文').onClick((): void => { openExternalUrl(this.getUIContext(), this.postShareUrl(currentPost)); }, 8)
       }
       // 图文混排帖（同时有图有视频）走「等宽正方形并排」，与信息流卡片同一套几何。
       // 图超过 MIXED_MEDIA_MAX_PICTURES 张时不做混排：三列网格放不下，硬塞会藏图。
       if (this.useMixedMediaLayout(currentPost)) {
         MixedMediaTiles({
           pictures: currentPost.pictures,
-          videoUrl: currentPost.videoUrl,
+          videoUrl: ownVideoUrl(currentPost),
           videoCoverUrl: currentPost.videoCoverUrl,
           isDark: this.isDark,
           fontScale: this.fontScale,

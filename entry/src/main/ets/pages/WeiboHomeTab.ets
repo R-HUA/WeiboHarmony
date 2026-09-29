@@ -6,7 +6,7 @@ import { ThreadListSkeleton } from '../components/Skeleton';
 import { Breakpoint, CARD_COLUMNS_KEY, ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode, isLargeScreenForm, isWideFormDevice as detectWideFormDevice, overrideColumns, readColumnMode } from '../common/Theme';
 import { WeiboPost } from '../model/WeiboModel';
 import { buildWeiboThreadItem } from '../common/WeiboCardItems';
-import { openExternalUrl } from '../common/ExternalLink';
+import { openWeiboLink } from '../common/WeiboLinkNavigation';
 import { FeedLoadState, FeedStore } from '../store/FeedStore';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService } from '../service/WeiboService';
@@ -70,6 +70,7 @@ interface CardArea { y: number; h: number; }
  */
 @Component
 export struct WeiboHomeTab {
+  @Consume('weiboNavStack') weiboNavStack: NavPathStack;
   @Prop mode: WeiboTimelineMode = WeiboTimelineMode.Recommend;
   onPendingChanged: (pending: boolean) => void = () => {};
   @Prop @Watch('onAcceptUpdate') acceptUpdateTrigger: number = 0;
@@ -422,7 +423,7 @@ export struct WeiboHomeTab {
 
   /** 正文里的网页链接：交给系统浏览器（见 common/ExternalLink）。 */
   private openLink(url: string): void {
-    openExternalUrl(this.getUIContext(), url);
+    openWeiboLink(this.getUIContext(), this.weiboNavStack, url);
   }
 
   private openImagePreview(urls: string[], index: number): void {

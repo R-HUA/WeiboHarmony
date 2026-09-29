@@ -11,8 +11,8 @@ export struct InlineVideo {
   @State private availableWidth: number = 0;
   @State private coverRatio: number = 16 / 9;
   private onCoverChange(): void { this.coverRatio = 16 / 9; }
-  private mediaWidth(): number { return Math.max(1, Math.min(this.availableWidth, 260 * this.coverRatio)); }
-  private mediaHeight(): number { return this.mediaWidth() / this.coverRatio; }
+  private mediaWidth(): number { return Math.max(1, this.availableWidth); }
+  private mediaHeight(): number { return Math.max(180, Math.min(360, this.mediaWidth() / this.coverRatio)); }
   @StorageLink(ACTIVE_FEED_VIDEO_KEY) @Watch('onOwnerChange') owner: string = '';
   @State private failed: boolean = false;
   @State private paused: boolean = false;
@@ -63,7 +63,7 @@ export struct InlineVideo {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.active()) {
         Video({ src: this.url, previewUri: this.cover, controller: this.controller })
-          .width('100%').height('100%')
+          .width(this.mediaWidth()).height(this.mediaHeight())
           .autoPlay(true).controls(this.fullscreen).objectFit(ImageFit.Contain)
           // Inline native controls consume vertical drags. Only explicit buttons below receive taps.
           .hitTestBehavior(this.fullscreen ? HitTestMode.Default : HitTestMode.None)
@@ -75,14 +75,14 @@ export struct InlineVideo {
           .onError((): void => { this.failed = true; this.stop(); })
           .onFullscreenChange((event): void => { this.fullscreen = event.fullscreen; this.showControls(); })
       } else {
-        Image(this.cover).width('100%').height('100%').objectFit(ImageFit.Contain)
+        Image(this.cover).width(this.mediaWidth()).height(this.mediaHeight()).objectFit(ImageFit.Contain)
           .onComplete((event): void => {
             if (event && event.width > 0 && event.height > 0) { this.coverRatio = event.width / event.height; }
           })
           .hitTestBehavior(HitTestMode.None)
       }
       Column() {
-        if (!this.active()) {
+        if (!this.active() || this.paused) {
           Button({ type: ButtonType.Circle }) {
             if (this.failed) { Text('重试').fontColor(Color.White).fontSize(14) }
             else { Image($r('app.media.video_play')).width(48).height(48).objectFit(ImageFit.Contain).hitTestBehavior(HitTestMode.None) }
@@ -90,9 +90,9 @@ export struct InlineVideo {
             .width(72).height(72).padding(0).fontSize(22).fontColor(Color.White)
             .backgroundColor(Color.Transparent)
             .accessibilityText(this.failed ? '重试播放视频' : '播放视频')
-            .onClick((): void => { this.failed = false; this.elapsed = 0; this.duration = 0; this.paused = false; this.controlsVisible = true; this.owner = this.token; }, 8)
+            .onClick((): void => { if (this.active()) { this.controller.start(); } else { this.failed = false; this.elapsed = 0; this.duration = 0; this.paused = false; this.controlsVisible = true; this.owner = this.token; } }, 8)
         }
-      }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+      }.width(this.mediaWidth()).height(this.mediaHeight()).justifyContent(FlexAlign.Center)
       if (this.active() && !this.fullscreen && this.controlsVisible) {
         Row({ space: 4 }) {
           Button({ type: ButtonType.Circle }) {
@@ -124,8 +124,8 @@ export struct InlineVideo {
     // Consume a genuine background tap without excluding the parent's pan recognizer.
     .onClick((): void => {
       if (this.active()) {
-        if (this.controlsVisible && !this.paused) { this.clearHideTimer(); this.controlsVisible = false; }
-        else { this.showControls(); }
+        if (this.paused) { this.controller.start(); } else { this.controller.pause(); }
+        this.showControls();
       }
     }, 8)
     .onVisibleAreaChange([0], (_visible: boolean, ratio: number): void => {

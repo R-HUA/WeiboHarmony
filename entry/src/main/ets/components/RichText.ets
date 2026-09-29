@@ -7,12 +7,13 @@
  * 同时保留 Text 自身的断行与省略号能力。
  */
 
-import { RichKind, RichSegment } from '../common/RichText';
+import { RichKind, RichSegment, readingSegments } from '../common/RichText';
 import { Theme, fs } from '../common/Theme';
 
 @Component
 export struct RichTextView {
   @Prop segments: RichSegment[] = [];
+  @Prop hasInlineVideo: boolean = false;
   @Prop isDark: boolean = false;
   /** 正文字号（vp）；行内表情按此放大 2vp，与官方表情观感接近。 */
   @Prop fontSize: number = 16;
@@ -39,7 +40,8 @@ export struct RichTextView {
 
   private dispatch(segment: RichSegment): void {
     if (segment.kind === RichKind.Mention) {
-      this.onMentionTap(segment.target, this.mentionName(segment));
+      if (segment.target.length > 0) { this.onMentionTap(segment.target, this.mentionName(segment)); }
+      else { this.onLinkTap('https://weibo.com/n/' + encodeURIComponent(this.mentionName(segment))); }
       return;
     }
     if (segment.kind === RichKind.Topic) {
@@ -57,7 +59,7 @@ export struct RichTextView {
 
   build() {
     Text() {
-      ForEach(this.segments, (segment: RichSegment, index: number): void => {
+      ForEach(readingSegments(this.segments, this.hasInlineVideo), (segment: RichSegment, index: number): void => {
         if (segment.kind === RichKind.Emoji && segment.imageUrl.length > 0) {
           ImageSpan(segment.imageUrl)
             .width(this.fontSize + 4)
@@ -73,7 +75,7 @@ export struct RichTextView {
             .fontColor(Theme.brand())
             .onClick((): void => { this.dispatch(segment); })
         }
-      }, (segment: RichSegment, index: number): string => `${index}|${segment.kind}|${segment.text}`)
+      }, (segment: RichSegment, index: number): string => `${index}|${segment.kind}|${segment.text}|${segment.target}|${segment.imageUrl}`)
     }
     .width('100%')
     .fontSize(fs(this.fontSize, this.fontScale))

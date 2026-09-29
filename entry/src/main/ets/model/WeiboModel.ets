@@ -17,6 +17,8 @@ export interface WeiboUser {
   statusesCount: number;
   verified: boolean;
   verifiedReason: string;
+  /** Omitted means the server has not supplied a relationship state. */
+  following?: boolean;
 }
 
 export interface WeiboPost {
@@ -36,6 +38,8 @@ export interface WeiboPost {
   previewPictures?: string[];
   /** A directly playable MP4 stream supplied by the mobile status endpoint. */
   videoUrl: string;
+  /** Stable media object identity when supplied by Weibo. */
+  videoId?: string;
   /** Poster image for the video stream; used while the player is preparing. */
   videoCoverUrl: string;
   createdAt: string;

@@ -63,3 +63,10 @@ test('mobile and mixed picture representations do not duplicate gallery cells',(
  const post=WeiboMapper.toPost({id:'14',pics:[{large:{url:'https://wx1.sinaimg.cn/large/a.jpg'}}],mix_media_info:{items:[{type:'pic',data:{large:{url:'https://wx1.sinaimg.cn/large/a.jpg'}}}]}});
  assert.equal(post.pictures.length,1);assert.equal(post.previewPictures.length,1);
 });
+test('empty mixed video entries cannot hide a later playable video or the page fallback',()=>{
+ const mix={items:[{type:'video',data:{media_info:{stream_url:''}}},{type:'video',data:{object_id:'video:2',page_pic:{url:'https://cdn.invalid/cover.jpg'},media_info:{stream_url:'https://cdn.invalid/2.mp4'}}}]};
+ const post=WeiboMapper.toPost({id:'15',mix_media_info:mix});
+ assert.equal(post.videoUrl,'https://cdn.invalid/2.mp4');assert.equal(post.videoId,'video:2');assert.equal(post.videoCoverUrl,'https://cdn.invalid/cover.jpg');
+ const fallback=WeiboMapper.toPost({id:'16',mix_media_info:{items:[mix.items[0]]},page_info:{object_id:'page:1',media_info:{stream_url:'https://cdn.invalid/page.mp4'}}});
+ assert.equal(fallback.videoUrl,'https://cdn.invalid/page.mp4');assert.equal(fallback.videoId,'page:1');
+});
