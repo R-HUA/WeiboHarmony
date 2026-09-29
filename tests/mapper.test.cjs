@@ -49,3 +49,17 @@ test('video cover falls back through desktop fields and rewrites to wap720',()=>
  assert.equal(top.videoCoverUrl,'https://wx3.sinaimg.cn/wap720/v3.jpg');
  assert.equal(WeiboMapper.toPost({id:'12'}).videoCoverUrl,'');
 });
+
+test('mixed media parses real mix_media_info and skips empty video candidates',()=>{
+ const post=WeiboMapper.toPost({id:'13',mix_media_info:{items:[
+  {type:'pic',data:{large:{url:'https://wx1.sinaimg.cn/large/a.jpg'}}},
+  {type:'video',data:{object_type:'video',page_pic:'https://wx1.sinaimg.cn/large/v.jpg',media_info:{stream_url_hd:'',stream_url:'https://example.invalid/video.mp4'}}}
+ ]}});
+ assert.equal(post.videoUrl,'https://example.invalid/video.mp4');
+ assert.equal(post.videoCoverUrl,'https://wx1.sinaimg.cn/wap720/v.jpg');
+ assert.deepEqual(post.pictures,['https://wx1.sinaimg.cn/wap720/a.jpg']);
+});
+test('mobile and mixed picture representations do not duplicate gallery cells',()=>{
+ const post=WeiboMapper.toPost({id:'14',pics:[{large:{url:'https://wx1.sinaimg.cn/large/a.jpg'}}],mix_media_info:{items:[{type:'pic',data:{large:{url:'https://wx1.sinaimg.cn/large/a.jpg'}}}]}});
+ assert.equal(post.pictures.length,1);assert.equal(post.previewPictures.length,1);
+});

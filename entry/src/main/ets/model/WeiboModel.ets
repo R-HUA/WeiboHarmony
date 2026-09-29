@@ -60,6 +60,8 @@ export interface WeiboComment {
   userName: string;
   userAvatar: string;
   text: string;
+  /** 原始 HTML（含 @/话题/链接/表情标签），供富文本渲染；text 是它的纯文本降级。 */
+  rawText?: string;
   createdAt: string;
   likeCount: number;
 }

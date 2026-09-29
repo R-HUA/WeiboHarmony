@@ -52,3 +52,7 @@ desktop.ini
 
 # Local build diagnostics
 /build-check.log
+/build-review.log
+/test-review.log
+/build-review-direct.log
+/video-api-review.txt

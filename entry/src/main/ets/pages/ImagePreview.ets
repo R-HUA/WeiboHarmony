@@ -1,3 +1,4 @@
+import { ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
 ﻿/*
  * TiebaPura - HarmonyOS 原生 ArkTS 实现的第三方百度贴吧客户端
  * Copyright (C) 2026 a307608689-afk
@@ -40,6 +41,7 @@ const MAX_STREAM_PAGES: number = 20;
 @Component
 struct ImagePreview {
   @State urls: string[] = [];
+  @State imageRatios: Record<string, number> = {};
   @State currentIndex: number = 0;
   @State isDark: boolean = isDarkMode();
   @StorageLink('fontScale') fontScale: number = 1.0;
@@ -91,6 +93,7 @@ struct ImagePreview {
   private context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
 
   aboutToAppear(): void {
+    AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, '');
     MaterialManager.init();
     this.hideStatusBar();
     const params = this.getUIContext().getRouter().getParams() as Record<string, Object>;
@@ -186,12 +189,26 @@ struct ImagePreview {
         Swiper() {
           ForEach(this.urls, (url: string, idx: number) => {
             Stack() {
-              // 图片节点常驻：缩放/平移只改属性，节点永不销毁重建，
-              // 双击放大/缩回瞬间不再重新解码位图，消除"闪一下"
+              // 长图解码取得比例后切换为按宽阅读；普通图保留原有缩放和平移。
+              if ((this.imageRatios[url] ?? 1) < 0.5) {
+                Scroll() {
+                  Image(url).width('100%').aspectRatio(this.imageRatios[url])
+                    .objectFit(ImageFit.Contain)
+                    .onClick((): void => { this.showControls = !this.showControls; }, 8)
+                }.width('100%').height('100%').scrollable(ScrollDirection.Vertical)
+              } else {
               Image(url)
                 .width('100%')
                 .height('100%')
                 .objectFit(ImageFit.Contain)
+                .onComplete((event): void => {
+                  if (event && event.width > 0 && event.height > 0 && this.imageRatios[url] === undefined) {
+                    const next: Record<string, number> = {};
+                    Object.keys(this.imageRatios).forEach((key: string): void => { next[key] = this.imageRatios[key]; });
+                    next[url] = event.width / event.height;
+                    this.imageRatios = next;
+                  }
+                })
                 .scale({ x: this.getScale(idx), y: this.getScale(idx) })
                 .translate({ x: this.getPanX(idx), y: this.getPanY(idx) })
 
@@ -240,6 +257,7 @@ struct ImagePreview {
                         .onAction((): void => { this.showSaveControls(); })
                     )
                   )
+              }
               }
             }
             .width('100%')

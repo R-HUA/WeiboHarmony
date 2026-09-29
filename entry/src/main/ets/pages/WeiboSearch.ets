@@ -4,6 +4,9 @@ import { curves } from '@kit.ArkUI';
 import { WeiboPost, WeiboSuggestion } from '../model/WeiboModel';
 import { SearchStore, SearchLoadState } from '../store/SearchStore';
 import { ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode } from '../common/Theme';
+import { buildWeiboThreadItem } from '../common/WeiboCardItems';
+import { requestTopicSearch } from '../common/TopicRequest';
+import { openExternalUrl } from '../common/ExternalLink';
 
 type TabAnimationDirection = 'left' | 'right';
 
@@ -89,31 +92,10 @@ export struct WeiboSearch {
   private onSearchRequested(): void { this.search(); }
   private async search(): Promise<void> { await this.store.search(this.keyword); }
 
+/** 卡片映射统一走 common/WeiboCardItems：正文富文本、转发引述块、发帖设备
+ *  这三处口径必须与首页/用户主页完全一致。 */
   private toThreadCard(post: WeiboPost): ThreadItemData {
-    const firstImage: string = post.pictures.length > 0 ? post.pictures[0] : '';
-    const titleText: string = post.text.length > 0 ? post.text : post.userName;
-    return {
-      tid: post.id,
-      postId: post.id,
-      forumId: '',
-      title: titleText,
-      forumName: post.source.length > 0 ? post.source : '微博',
-      forumAvatar: '',
-      author: post.userName,
-      authorId: post.userId,
-      authorAvatar: post.userAvatar,
-      replyNum: post.commentCount,
-      likeCount: post.likeCount,
-      isLiked: post.isLiked,
-      abstract: post.repost === null ? '' : post.repost.text,
-      firstImage: firstImage,
-      images: post.pictures,
-      videoUrl: post.videoUrl,
-      videoCoverUrl: post.videoCoverUrl,
-      createTime: post.createdAt,
-      isTop: false,
-      isGood: false,
-    };
+    return buildWeiboThreadItem(post);
   }
 
   private openPost(post: WeiboPost): void {
@@ -122,6 +104,16 @@ export struct WeiboSearch {
       return;
     }
     this.onOpenPost(post);
+  }
+
+  /** 正文/评论里的 #话题#：本页在信息流根内容里，同样借 AppStorage 信号交给宿主导航页。 */
+  private openTopic(topic: string): void {
+    requestTopicSearch(topic);
+  }
+
+  /** 正文里的网页链接：交给系统浏览器（见 common/ExternalLink）。 */
+  private openLink(url: string): void {
+    openExternalUrl(this.getUIContext(), url);
   }
 
   private openUserProfile(userId: string, userName: string): void {
@@ -197,9 +189,13 @@ export struct WeiboSearch {
                 onTap: (_id: string): void => { this.openPost(post); },
                 onComment: (_id: string): void => { this.openPost(post); },
                 onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },
-                onImageTap: (_urls: string[], index: number): void => {
-                  // 预览使用高清档；卡片展示用的是 wap720 中图
-                  this.openImagePreview(post.previewPictures ?? post.pictures, index);
+                // 正文里的 @用户名/#话题#/网页链接：各自走自己的跳转，不落到整卡详情
+                onMentionTap: (uid: string, name: string): void => { this.openUserProfile(uid, name); },
+                onTopicTap: (topic: string): void => { this.openTopic(topic); },
+                onLinkTap: (url: string): void => { this.openLink(url); },
+                onImageTap: (urls: string[], index: number): void => {
+                  // 以卡片传入的列表为准（正文高清档 / 转发原文自己的图）
+                  this.openImagePreview(urls.length > 0 ? urls : (post.previewPictures ?? post.pictures), index);
                 },
                 skipImageCache: true,
               })

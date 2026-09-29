@@ -1,3 +1,5 @@
+import { InlineVideo } from '../components/InlineVideo';
+import { PictureGallery } from '../components/PictureGallery';
 import { PostEntities } from '../store/PostEntities';
 import { common } from '@kit.AbilityKit';
 import { WeiboComment, WeiboPost, WeiboUser } from '../model/WeiboModel';
@@ -5,6 +7,7 @@ import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService } from '../service/WeiboService';
 import { Breakpoint, CARD_COLUMNS_KEY, ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode, isLargeScreenForm, isWideFormDevice as detectWideFormDevice, overrideColumns, readColumnMode } from '../common/Theme';
 import { ShareUtil } from '../common/ShareUtil';
+import { ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
 import { HdsNavigation, HdsNavigationTitleMode, HdsTabs, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 
 /** HDS mini title bar height below the system status-bar safe area. */
@@ -76,8 +79,7 @@ export struct WeiboFeed {
   private pageScroller: Scroller = new Scroller();
   private readonly isWideFormDevice: boolean = detectWideFormDevice();
   private currentAccountId: string = '';
-  private videoController: VideoController = new VideoController();
-  @State videoLoadFailed: boolean = false;
+  onPageHide(): void { AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, ''); }
 
   async aboutToAppear(): Promise<void> {
     const context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -475,75 +477,14 @@ export struct WeiboFeed {
 
   @Builder
   PictureGrid(pictures: string[]) {
-    if (this.pictureCount(pictures) === 1) {
-      Image(pictures[0])
-        .width('100%')
-        .height(210)
-        .constraintSize({ maxWidth: 360 })
-        .objectFit(ImageFit.Cover)
-        .borderRadius(Radius.md)
-        .onClick((): void => { this.openImagePreview(pictures, 0); })
-    } else if (this.pictureCount(pictures) > 1) {
-      Grid() {
-        ForEach(pictures.slice(0, this.pictureCount(pictures)), (picture: string, index: number): void => {
-          GridItem() {
-            Image(picture)
-              .width('100%')
-              .height(this.pictureGridCellHeight(pictures))
-              .objectFit(ImageFit.Cover)
-              .borderRadius(Radius.md)
-              .onClick((): void => { this.openImagePreview(pictures, index); })
-          }
-        }, (picture: string, index: number): string => `${index}`)
-      }
-      .columnsTemplate(this.pictureGridColumns(pictures) === 2 ? '1fr 1fr' : '1fr 1fr 1fr')
-      .columnsGap(Spacing.sm)
-      .rowsGap(Spacing.sm)
-      .width('100%')
-      .height(this.pictureGridHeight(pictures))
-      .constraintSize({ maxWidth: 360 })
-      .enableScrollInteraction(false)
-      .nestedScroll({
-        scrollForward: NestedScrollMode.PARENT_FIRST,
-        scrollBackward: NestedScrollMode.PARENT_FIRST
-      })
-    }
+    PictureGallery({ pictures: pictures, isDark: this.isDark,
+      onPictureTap: (index: number): void => { this.openImagePreview(pictures, index); } })
   }
 
   @Builder
   VideoPlayer(post: WeiboPost) {
     if (post.videoUrl.length > 0) {
-      Stack() {
-        Video({
-          src: post.videoUrl,
-          previewUri: post.videoCoverUrl,
-          controller: this.videoController
-        })
-          .width('100%')
-          .height(220)
-          .controls(true)
-          .autoPlay(false)
-          .loop(false)
-          .objectFit(ImageFit.Contain)
-          .backgroundColor(Color.Transparent)
-          .borderRadius(Radius.md)
-          .onError((): void => {
-            this.videoLoadFailed = true;
-          })
-        if (this.videoLoadFailed) {
-          Text('视频加载失败，请稍后重试')
-            .fontSize(fs(13, this.fontScale))
-            .fontColor(Color.White)
-            .padding(12)
-            .backgroundColor('#99000000')
-            .borderRadius(Radius.full)
-        }
-      }
-      .width('100%')
-      .height(220)
-      .backgroundColor(Color.Black)
-      .borderRadius(Radius.md)
-      .clip(true)
+      InlineVideo({ url: post.videoUrl, cover: post.videoCoverUrl })
     }
   }
 
@@ -812,7 +753,9 @@ export struct WeiboFeed {
               .fontColor(Theme.danger())
               .margin({ top: Spacing.lg })
           } else if (this.posts.length === 0) {
-            Text($r('app.string.weibo_empty'))
+            // 这一页只会以 ownProfile 打开（「我的微博」），所以用「这个账号还没有发布微博」，
+            // 而不是泛化的「暂时没有内容」——后者看不出到底是没有数据还是没加载。
+            Text($r('app.string.weibo_profile_empty'))
               .width('100%')
               .textAlign(TextAlign.Center)
               .fontSize(fs(13, this.fontScale))

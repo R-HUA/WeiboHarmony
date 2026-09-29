@@ -5,6 +5,8 @@ import { ThreadCard, ThreadItemData, ThreadSharePayload, EmptyView, ErrorView } 
 import { ThreadListSkeleton } from '../components/Skeleton';
 import { Breakpoint, CARD_COLUMNS_KEY, ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode, isLargeScreenForm, isWideFormDevice as detectWideFormDevice, overrideColumns, readColumnMode } from '../common/Theme';
 import { WeiboPost } from '../model/WeiboModel';
+import { buildWeiboThreadItem } from '../common/WeiboCardItems';
+import { openExternalUrl } from '../common/ExternalLink';
 import { FeedLoadState, FeedStore } from '../store/FeedStore';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService } from '../service/WeiboService';
@@ -44,7 +46,9 @@ class WeiboPostDataSource implements IDataSource {
 
   notifyAdd(start: number): void {
     for (let index: number = 0; index < this.listeners.length; index++) {
-      this.listeners[index].onDataAdd(start);
+      for (let added: number = start; added < this.data.length; added++) {
+        this.listeners[index].onDataAdd(added);
+      }
     }
   }
 }
@@ -67,18 +71,29 @@ interface CardArea { y: number; h: number; }
 @Component
 export struct WeiboHomeTab {
   @Prop mode: WeiboTimelineMode = WeiboTimelineMode.Recommend;
+  onPendingChanged: (pending: boolean) => void = () => {};
+  @Prop @Watch('onAcceptUpdate') acceptUpdateTrigger: number = 0;
+  private onAcceptUpdate(): void { if (this.isActive) { this.feed.acceptPendingUpdate(); } }
   @Prop showHeader: boolean = true;
   @Prop @Watch('onEnter') animationTrigger: number = 0;
   @Prop @Watch('onExit') exitTrigger: number = 0;
   /** 外部请求平滑回到列表顶端；值递增一次即消费一次（底部导航单击首页 Tab）。 */
   @Prop @Watch('onScrollTopRequest') scrollTopTrigger: number = 0;
   /** 当前是否为屏幕上可见的那条信息流；隐藏的一条不响应回顶请求。 */
-  @Prop isActive: boolean = true;
+  @Prop @Watch('onActiveChanged') isActive: boolean = true;
+  private feedReady: boolean = false;
+  private onActiveChanged(): void {
+    if (!this.isActive || !this.feedReady) { return; }
+    this.resetReadingViewport();
+    this.feed.enter();
+  }
   /** Reserved in the scroll content, so floating host chrome never shrinks the scroll viewport. */
   @Prop topInset: number = 0;
   @Prop bottomInset: number = 116;
   onOpenPost: (post: WeiboPost) => void = () => {};
   onOpenUserProfile: (userId: string, userName: string) => void = () => {};
+  /** 点正文里的 #话题#：由宿主切到搜索页并发起该话题的检索。 */
+  onOpenTopic: (topic: string) => void = () => {};
   @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
   private onPostEntitiesChanged(): void { this.reapplyEntities(); }
   @State isDark: boolean = isDarkMode();
@@ -117,14 +132,22 @@ export struct WeiboHomeTab {
     const context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
     await WeiboAuthManager.getInstance().init(context);
     this.feed = new FeedStore(this.mode === WeiboTimelineMode.Recommend ? 'recommend' : 'following');
+    this.feed.onPendingChanged = (pending: boolean): void => { this.onPendingChanged(pending); };
+    this.feed.onContentChanged = (): void => { this.syncTimeline(); this.beginPositionRestore(); };
+    this.feed.onStreamReplaced = (): void => { this.resetReadingViewport(); };
     this.columnMode = readColumnMode();
     this.syncCardColumns();
-    await this.loadFirstPage(false);
+    this.feedReady = true;
+    await this.loadFirstPage(true);
   }
 
   aboutToDisappear(): void {
+    this.feedReady = false;
     this.saveReadingPosition();
     this.feed.cancel();
+    this.feed.onContentChanged = (): void => {};
+    this.feed.onStreamReplaced = (): void => {};
+    this.feed.onPendingChanged = (): void => {};
   }
   private onDarkTick(): void {
     this.isDark = isDarkMode();
@@ -249,7 +272,7 @@ export struct WeiboHomeTab {
   private onWeiboAuthTick(): void {
     this.feed.reset();
     this.syncTimeline();
-    this.loadFirstPage(false);
+    this.loadFirstPage(true);
   }
 
   /**
@@ -259,8 +282,6 @@ export struct WeiboHomeTab {
   private async loadFirstPage(explicit: boolean): Promise<void> {
     try {
       await this.feed.loadFirst(explicit);
-      this.syncTimeline();
-      this.beginPositionRestore();
       if (explicit && this.feed.posts.length > 0 && this.feed.errorMessage.length > 0) {
         this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
       }
@@ -268,30 +289,30 @@ export struct WeiboHomeTab {
       // 下拉刷新指示只在显式刷新任务结束后收起，包括失败路径
       if (explicit) { this.pullRefreshing = false; }
     }
-    this.scheduleAutoFill();
+    if (!this.feed.hasPendingUpdate) { this.scheduleAutoFill(); }
   }
 
   private async loadMore(): Promise<void> {
+    const previousCount: number = this.feed.posts.length;
     await this.feed.loadMore();
     this.syncTimeline();
     if (this.feed.errorMessage.length > 0 && this.feed.posts.length > 0) {
       this.getUIContext().getPromptAction().showToast({ message: this.feed.errorMessage });
-      this.feed.errorMessage = '';
     }
-    this.scheduleAutoFill();
+    if (this.feed.posts.length > previousCount) { this.scheduleAutoFill(); }
   }
 
   /**
    * 无缝加载的兜底：首屏内容不足一屏时列表根本滚不动，onReachEnd 永不触发，
    * 因此在每次载入结束后延迟一帧比对内容与视口高度，没铺满就再续一页。
-   * 终止性由 FeedStore 保证：结果没有增长时 hasMore 会被置为 false，最多多请求一次。
+   * 仅内容增长时继续自动补屏；重复页批次和失败留给底部按钮手动续读。
    */
   private scheduleAutoFill(): void {
     setTimeout((): void => { this.autoFillIfViewportNotFilled(); }, 0);
   }
 
   private autoFillIfViewportNotFilled(): void {
-    if (!this.feed.hasMore || this.feed.loadingMore || this.feed.refreshing) { return; }
+    if (!this.feed.hasMore || this.feed.loadingMore || this.feed.refreshing || this.feed.errorMessage.length > 0) { return; }
     if (this.feed.state !== FeedLoadState.Success || this.feed.posts.length === 0) { return; }
     if (this.scrollViewportHeight <= 0 || this.timelineContentHeight <= 0) { return; }
     if (this.timelineContentHeight > this.scrollViewportHeight + 8) { return; }
@@ -299,6 +320,13 @@ export struct WeiboHomeTab {
   }
 
   /** 缓存恢复后记录待恢复锚点，由锚点卡片的首次 onAreaChange 触发滚动。 */
+  private resetReadingViewport(): void {
+    this.positionRestoring = ''; this.restoreRelative = 0;
+    this.cardAreas.clear();
+    try { this.timelineScroller.scrollTo({ xOffset: 0, yOffset: 0 }); }
+    catch (_) { /* A not-yet-mounted scroller already starts at the top. */ }
+  }
+
   private beginPositionRestore(): void {
     if (this.feed.pendingAnchorId.length === 0) { return; }
     if (this.feed.state !== FeedLoadState.Success) {
@@ -357,31 +385,12 @@ export struct WeiboHomeTab {
     }
   }
 
+  /**
+   * 卡片映射统一走 common/WeiboCardItems：正文富文本、转发引述块、发帖设备
+   * 这三个口径在首页/搜索/用户主页必须完全一致，分散实现必然漂移。
+   */
   private toThreadCard(post: WeiboPost): ThreadItemData {
-    const firstImage: string = post.pictures.length > 0 ? post.pictures[0] : '';
-    const titleText: string = post.text.length > 0 ? post.text : post.userName;
-    return {
-      tid: post.id,
-      postId: post.id,
-      forumId: '',
-      title: titleText,
-      forumName: post.source.length > 0 ? post.source : '微博',
-      forumAvatar: '',
-      author: post.userName,
-      authorId: post.userId,
-      authorAvatar: post.userAvatar,
-      replyNum: post.commentCount,
-      likeCount: post.likeCount,
-      isLiked: post.isLiked,
-      abstract: post.repost === null ? '' : post.repost.text,
-      firstImage: firstImage,
-      images: post.pictures,
-      videoUrl: post.videoUrl,
-      videoCoverUrl: post.videoCoverUrl,
-      createTime: post.createdAt,
-      isTop: false,
-      isGood: false,
-    };
+    return buildWeiboThreadItem(post);
   }
 
   private openPost(post: WeiboPost): void {
@@ -400,6 +409,20 @@ export struct WeiboHomeTab {
       return;
     }
     this.onOpenUserProfile(id, name);
+  }
+
+  /** 正文里的 #话题#：切到搜索页并发起检索，而不是把用户丢到浏览器。 */
+  private openTopic(topic: string): void {
+    const keyword: string = typeof topic === 'string' ? topic.trim() : '';
+    if (keyword.length === 0) {
+      return;
+    }
+    this.onOpenTopic(keyword);
+  }
+
+  /** 正文里的网页链接：交给系统浏览器（见 common/ExternalLink）。 */
+  private openLink(url: string): void {
+    openExternalUrl(this.getUIContext(), url);
   }
 
   private openImagePreview(urls: string[], index: number): void {
@@ -449,7 +472,7 @@ export struct WeiboHomeTab {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        Button($r('app.string.weibo_load'))
+        Button(this.feed.hasPendingUpdate ? '有更新' : '刷新')
           .height(36)
           .fontSize(fs(13, this.fontScale))
           .backgroundColor(Theme.manualGlass(this.isDark, true))
@@ -459,7 +482,10 @@ export struct WeiboHomeTab {
           .backgroundEffect(ImmBlur.accent())
           .systemMaterial(ImmMaterial.accent(this.isDark))
           .borderRadius(Radius.full)
-          .onClick(() => { this.loadFirstPage(true); })
+          .onClick(() => {
+            if (this.feed.hasPendingUpdate) { this.feed.acceptPendingUpdate(); }
+            else { this.loadFirstPage(true); }
+          })
       }
       .width('100%')
     }
@@ -477,9 +503,14 @@ export struct WeiboHomeTab {
       onLike: (_id: string, _postId: string, liked: boolean): void => { this.toggleLike(post, liked); },
       onShare: (data: ThreadSharePayload): void => { this.onShare(data); },
       onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },
-      onImageTap: (_urls: string[], index: number): void => {
-        // 预览使用高清档；卡片展示用的是 wap720 中图
-        this.openImagePreview(post.previewPictures ?? post.pictures, index);
+      // 正文/转发里的 @用户名、#话题#、网页链接：各自走自己的跳转，不落到整卡详情
+      onMentionTap: (uid: string, name: string): void => { this.openUserProfile(uid, name); },
+      onTopicTap: (topic: string): void => { this.openTopic(topic); },
+      onLinkTap: (url: string): void => { this.openLink(url); },
+      onImageTap: (urls: string[], index: number): void => {
+        // 以卡片传入的列表为准：正文走高清档，转发原文走转发自己的图，
+        // 卡片已在 ThreadItemData.previewImages / repostPreviewImages 里分好。
+        this.openImagePreview(urls.length > 0 ? urls : (post.previewPictures ?? post.pictures), index);
       },
       skipImageCache: true
     })
@@ -501,6 +532,14 @@ export struct WeiboHomeTab {
       .width('100%')
       .height(48)
       .justifyContent(FlexAlign.Center)
+    } else if (this.feed.needsRefresh) {
+      Button('刷新信息流')
+        .enabled(!this.feed.refreshing)
+        .onClick((): void => {
+          if (this.feed.hasPendingUpdate) { this.feed.acceptPendingUpdate(); }
+          else { this.loadFirstPage(true); }
+        }, 8)
+        .margin({ top: 8, bottom: 8 })
     } else if (!this.feed.hasMore) {
       Text($r('app.string.weibo_timeline_no_more'))
         .width('100%')
@@ -508,6 +547,10 @@ export struct WeiboHomeTab {
         .textAlign(TextAlign.Center)
         .fontSize(fs(12, this.fontScale))
         .fontColor(Theme.textSecondary(this.isDark))
+    } else {
+      Button(this.feed.errorMessage.length > 0 ? '重试' : '继续加载')
+        .onClick((): void => { this.loadMore(); }, 8)
+        .margin({ top: 8, bottom: 8 })
     }
   }
 
@@ -532,7 +575,10 @@ export struct WeiboHomeTab {
 
   @Builder
   Timeline() {
-    if (this.feed.state === FeedLoadState.Loading) {
+    // Idle 必须显式走骨架屏：FeedStore.state 初值是 Idle，而首帧发生在
+    // `await WeiboAuthManager.init()` 之前，此时 `loadFirstPage` 还没跑。以前 Idle 没有分支、
+    // 落到最后的兜底 else，于是冷启动会先闪一屏「没有内容」的空态——看起来就像提示语错了。
+    if (this.feed.state === FeedLoadState.Idle || this.feed.state === FeedLoadState.Loading) {
       ThreadListSkeleton({ count: 4 })
         .margin({ top: Spacing.md })
     } else if (this.feed.state === FeedLoadState.Error) {
@@ -542,7 +588,7 @@ export struct WeiboHomeTab {
       EmptyView({
         message: this.mode === WeiboTimelineMode.Following
           ? $r('app.string.weibo_following_empty')
-          : $r('app.string.weibo_empty'),
+          : $r('app.string.weibo_recommend_empty'),
         icon: '○'
       })
         .height('65%')
@@ -558,8 +604,9 @@ export struct WeiboHomeTab {
       }
       .width('100%')
     } else {
-      EmptyView({ message: $r('app.string.weibo_empty'), icon: '○' })
-        .height('65%')
+      // 理论上到不了；真到了也按「加载中」处理，不要谎报空态
+      ThreadListSkeleton({ count: 4 })
+        .margin({ top: Spacing.md })
     }
   }
 
@@ -609,6 +656,7 @@ export struct WeiboHomeTab {
     .refreshOffset(64)
     .layoutWeight(1)
     .width('100%')
+    .height('100%')
   }
 
   /** Same alpha-mask used by TiebaPura's HomeTab: content fades when it enters the floating title area. */
@@ -637,7 +685,10 @@ export struct WeiboHomeTab {
       if (this.showHeader) {
         this.Header()
       }
-      this.TimelineScroller()
+      Stack({ alignContent: Alignment.Top }) {
+        this.TimelineScroller()
+
+      }.width('100%').layoutWeight(1)
     }
     .width('100%')
     .height('100%')

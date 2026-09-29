@@ -235,6 +235,35 @@ export const BRAND_BLUE: string = '#E6162D';
 export const BRAND_BLUE_LIGHT: string = '#F05A6E';
 
 /**
+ * 信息流视频「当前唯一激活项」的 AppStorage 键。
+ *
+ * 背景（真机实测，2026-09-28）：系统资源调度服务 `resource_schedule_service` 会统计应用的
+ * **硬件解码器**占用，超过阈值时在应用刚退到后台的瞬间以 `HARDWARE_DECODING_RESOURCES_LIMIT`
+ * 直接 SIGKILL（signal 9，不走 onDestroy/onWindowStageDestroy）。表现就是「切出应用再切回
+ * 像重启一样整个重载」——其实是被系统杀了，切回来必然是 onCreate 冷启动重放。
+ *
+ * 触发条件：ArkUI 的 `Video` 组件在**构造时**就会建立播放管线并申请一路硬件解码器，
+ * 即使 `autoPlay(false)` 也照样占资源。信息流若为每个视频帖都挂一个 Video，滚几屏后
+ * 同时存活几十个播放器，退后台时被清算。
+ *
+ * 因此列表卡片默认只画封面图 + 播放按钮，点击后才把该卡片的 key 写入此处；
+ * 全局同时只有一个 Video 实例存活（点另一个会自动释放上一个）。
+ */
+export const ACTIVE_FEED_VIDEO_KEY: string = 'activeFeedVideoKey';
+
+/**
+ * 跨页面请求「检索某个话题」的信号。
+ *
+ * 首页点 #话题# 时可以直接回调宿主切页签；但详情页、用户主页这些已经压在
+ * Navigation 栈里的页面没有这个回调，只能借用 AppStorage 通知宿主导航页。
+ * 取值形如 `<自增序号>|<话题词>`：带上序号是为了让「同一话题被点两次」也能
+ * 触发 `@Watch`（纯文本值不变时不会重新回调）。宿主收到后会先清栈再切到搜索页。
+ */
+export const TOPIC_REQUEST_KEY: string = 'weiboTopicRequest';
+/** 与 TOPIC_REQUEST_KEY 配套的自增序号，保证 @Watch 在任何情况下都能被触发。 */
+export const TOPIC_REQUEST_TICK_KEY: string = 'weiboTopicRequestTick';
+
+/**
  * HTML 实体解码
  */
 export function decodeHtmlEntities(input: string): string {

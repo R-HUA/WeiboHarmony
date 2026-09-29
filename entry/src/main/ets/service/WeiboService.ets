@@ -1,4 +1,4 @@
-import { WeiboApiResponse, WeiboStatusApiResponse, WeiboConfigResponse, WeiboConfigData, WeiboFollowingTimelineResponse, WeiboResponseData, WeiboHotTopicJson, WeiboSuggestionJson, WeiboCardJson, WeiboUserJson, WeiboPictureJson, WeiboPictureSizeJson, WeiboVideoUrlsJson, WeiboVideoMediaInfoJson, WeiboPagePictureJson, WeiboPageInfoJson, WeiboPostJson, WeiboCommentJson } from '../api/WeiboDtos';
+import { WeiboApiResponse, WeiboStatusApiResponse, WeiboConfigResponse, WeiboConfigData, WeiboFollowingTimelineResponse, WeiboResponseData, WeiboHotTopicJson, WeiboSuggestionJson, WeiboCardJson, WeiboUserJson, WeiboPictureJson, WeiboPictureSizeJson, WeiboVideoUrlsJson, WeiboVideoMediaInfoJson, WeiboPagePictureJson, WeiboPageInfoJson, WeiboPostJson, WeiboCommentJson, WeiboLongTextResponse } from '../api/WeiboDtos';
 import { WeiboMapper } from '../api/WeiboMapper';
 import { PostEntities } from '../store/PostEntities';
 import { ResponseCache } from '../domain/ResponseCache';
@@ -8,6 +8,9 @@ import { WeiboHttpClient } from '../network/WeiboHttpClient';
 import { WeiboComment, WeiboCommentsPage, WeiboHotTopic, WeiboPost, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from './WeiboAuthManager';
 import { WeiboVisitorSession } from './WeiboVisitorSession';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const LOG_TAG: string = 'WeiboService';
 
 /**
  * Adapter for public mobile containers and user-initiated post actions.
@@ -19,6 +22,13 @@ export class WeiboService {
   private recentPost: WeiboPost | null = null;
   private commentCache: ResponseCache<WeiboCommentsPage> = new ResponseCache<WeiboCommentsPage>();
   private pendingLikes: Set<string> = new Set();
+  /**
+   * 长文全文缓存（postId -> 全文 HTML）。
+   * 一条长文会被列表卡片（点「展开」）和详情页先后索要，缓存住避免重复请求。
+   */
+  private longTextCache: Map<string, string> = new Map();
+  /** 正在飞的长文请求：同一帖被两处同时索要时合并成一次网络请求。 */
+  private longTextPending: Map<string, Promise<string>> = new Map();
 
   constructor() {
     WeiboAuthManager.getInstance().onSessionChange((): void => {
@@ -26,6 +36,8 @@ export class WeiboService {
       PostEntities.shared().clear();
       this.commentCache = new ResponseCache<WeiboCommentsPage>();
       this.pendingLikes.clear();
+      this.longTextCache.clear();
+      this.longTextPending.clear();
     });
   }
 
@@ -147,6 +159,63 @@ export class WeiboService {
 
   rememberPost(post: WeiboPost): void {
     this.recentPost = post;
+  }
+
+  /**
+   * 长文全文。
+   *
+   * `isLongText` 的帖子，列表接口只给截断到约 140 字的 HTML，末尾那截「展开 / 全文」是
+   * 接口自带的分隔标记、不是正文。不补这一步，就会出现「列表截断显示展开，点进详情还是展开」。
+   *
+   * 两条通道：移动端 `/statuses/extend`（关注流的 postId 同样可用），拿不到再退回桌面端
+   * `/ajax/statuses/longtext`。都失败返回空串——调用方保留截断正文，不要变成白屏。
+   */
+  async fetchLongText(postId: string): Promise<string> {
+    const id: string = postId.trim();
+    if (id.length === 0) { return ''; }
+    const cached: string | undefined = this.longTextCache.get(id);
+    if (cached !== undefined) { return cached; }
+    const inflight: Promise<string> | undefined = this.longTextPending.get(id);
+    if (inflight !== undefined) { return inflight; }
+
+    const generation: number = WeiboAuthManager.getInstance().getGeneration();
+    const task: Promise<string> = this.loadLongText(id, generation);
+    this.longTextPending.set(id, task);
+    try {
+      const html: string = await task;
+      if (generation !== WeiboAuthManager.getInstance().getGeneration()) { return ''; }
+      if (html.length > 0) {
+        this.longTextCache.set(id, html);
+      }
+      return html;
+    } finally {
+      if (this.longTextPending.get(id) === task) { this.longTextPending.delete(id); }
+    }
+  }
+
+  /** 已经拿到的全文；没有返回空串（同步，供渲染路径直接取用）。 */
+  cachedLongText(postId: string): string {
+    return this.longTextCache.get(postId.trim()) ?? '';
+  }
+
+  private async loadLongText(id: string, generation: number): Promise<string> {
+    const encoded: string = encodeURIComponent(id);
+    try {
+      const raw: string = await this.get(`https://m.weibo.cn/statuses/extend?id=${encoded}`);
+      const html: string = WeiboMapper.longTextContent(JSON.parse(raw) as WeiboLongTextResponse);
+      if (html.length > 0) { return html; }
+      hilog.warn(0x0000, LOG_TAG, 'Mobile long text empty for %{public}s', id);
+    } catch (error) {
+      hilog.warn(0x0000, LOG_TAG, 'Mobile long text failed: %{public}s', JSON.stringify(error));
+    }
+    if (generation !== WeiboAuthManager.getInstance().getGeneration()) { return ''; }
+    try {
+      const raw: string = await WeiboHttpClient.getDesktop(`https://weibo.com/ajax/statuses/longtext?id=${encoded}`, WeiboAuthManager.getInstance().getDesktopCookie());
+      return WeiboMapper.longTextContent(JSON.parse(raw) as WeiboLongTextResponse);
+    } catch (error) {
+      hilog.warn(0x0000, LOG_TAG, 'Desktop long text failed: %{public}s', JSON.stringify(error));
+      return '';
+    }
   }
 
   getRememberedPost(postId: string): WeiboPost | null {
@@ -278,9 +347,19 @@ export class WeiboService {
 
   private postsFromResponse(raw: string): WeiboPost[] {
     const response: WeiboApiResponse = this.parseResponse(raw);
-    const cards: WeiboCardJson[] = response.data?.cards ?? [];
+    const data: WeiboResponseData | undefined = response.data;
+    if (data === undefined) {
+      // ok:1 却没有 data 属于接口结构异常。这里必须抛错而不是返回空数组：
+      // 返回空数组会被 FeedStore 判定为 Empty，把「拿不到数据」显示成「内容为空」，
+      // 既没有错误提示也不会重试（首页冷启动误显示空态的一半原因就在这里）。
+      throw new Error('微博接口未返回内容，请稍后重试');
+    }
+    const cards: WeiboCardJson[] = data.cards ?? [];
     const posts: WeiboPost[] = [];
     this.appendPostsFromCards(cards, posts);
+    if (posts.length === 0) {
+      hilog.warn(0x0000, LOG_TAG, 'No post parsed from %{public}d card(s)', cards.length);
+    }
     return posts;
   }
 

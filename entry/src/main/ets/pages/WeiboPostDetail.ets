@@ -1,7 +1,15 @@
+import { ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
+import { InlineVideo } from '../components/InlineVideo';
+import { PictureGallery } from '../components/PictureGallery';
 import { PostEntities } from '../store/PostEntities';
 import { common } from '@kit.AbilityKit';
 import { curves } from '@kit.ArkUI';
 import { WeiboComment, WeiboPost, WeiboUser } from '../model/WeiboModel';
+import { RichSegment, parseWeiboRich, stripExpandMarker } from '../common/RichText';
+import { RichTextView } from '../components/RichText';
+import { MixedMediaTiles, MIXED_MEDIA_MAX_PICTURES } from '../components/MediaTiles';
+import { requestTopicSearch } from '../common/TopicRequest';
+import { openExternalUrl } from '../common/ExternalLink';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { WeiboService } from '../service/WeiboService';
 import { ImmBlur, ImmMaterial, MaterialManager, Radius, Spacing, Theme, fs, isDarkMode } from '../common/Theme';
@@ -21,6 +29,17 @@ import { syncWeiboSplitNavigation } from '../common/WeiboNavigationLayout';
  */
 export interface WeiboPostDetailRouteParam {
   postId: string;
+}
+
+/**
+ * 点正文里 @用户名 要跳到用户主页。
+ * 结构与 pages/WeiboUserProfile 的 WeiboUserProfileRouteParam 完全一致，
+ * 但刻意不 import 那个类型：WeiboUserProfile 反过来 import 了本文件的
+ * WeiboPostDetailRouteParam，互相 import 会构成循环。
+ */
+interface MentionRouteParam {
+  userId: string;
+  userName: string;
 }
 
 @Builder
@@ -43,6 +62,10 @@ export struct WeiboPostDetail {
   private viewRevision: number = 0;
   @State commentsLoading: boolean = false;
   @State errorMessage: string = '';
+  /** 长文正文全文（HTML）。空串表示这不是长文，或者还没拉到。 */
+  @State private longTextRaw: string = '';
+  /** 转发原文的全文（HTML）。转发也可能是长文。 */
+  @State private repostLongTextRaw: string = '';
   @State commentDraft: string = '';
   @State commentSending: boolean = false;
   @State accountAvatarUrl: string = '';
@@ -57,7 +80,6 @@ export struct WeiboPostDetail {
   @StorageLink('weiboAuthTick') @Watch('onWeiboAuthTick') weiboAuthTick: number = 0;
   @Consume('weiboNavStack') weiboNavStack: NavPathStack;
   private detailScroller: Scroller = new Scroller();
-  private videoController: VideoController = new VideoController();
   private gestureShareListening: boolean = false;
   private gestureSharing: boolean = false;
   private gestureSharePreviewPostId: string = '';
@@ -67,7 +89,6 @@ export struct WeiboPostDetail {
     (target: harmonyShare.SharableTarget): void => {
       this.sharePostByGesture(target);
     };
-  @State videoLoadFailed: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     const context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -81,7 +102,6 @@ export struct WeiboPostDetail {
 
   aboutToDisappear(): void {
     this.viewRevision++; this.commentsRevision++;
-    try { this.videoController.pause(); } catch (error) {}
     this.unregisterGesturesShare();
   }
 
@@ -108,9 +128,11 @@ export struct WeiboPostDetail {
       this.presentPostContent();
       await this.prepareGestureSharePreview();
       await this.loadComments();
+      await this.loadLongTextIfNeeded();
       return;
     }
     await this.loadPost();
+    await this.loadLongTextIfNeeded();
   }
 
   private onWeiboAuthTick(): void {
@@ -139,6 +161,38 @@ export struct WeiboPostDetail {
       if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.accountAvatarUrl = '';
       this.accountName = '';
+    }
+  }
+
+  /**
+   * 详情页必须给出完整正文：长文帖在列表接口里是截断版（末尾带「展开 / 全文」标记），
+   * 只有再调一次全文接口才有完整内容——这就是「点进详情还是显示展开」的根因。
+   * Service 侧有缓存和在飞合并，所以从信息流先点过「展开」再进来不会重复请求。
+   */
+  private async loadLongTextIfNeeded(): Promise<void> {
+    const post: WeiboPost | null = this.post;
+    if (post === null) {
+      return;
+    }
+    const mainId: string = post.isLongText === true ? post.id : '';
+    const repost: WeiboPost | null = post.repost;
+    const repostId: string = repost !== null && repost.isLongText === true ? repost.id : '';
+    this.longTextRaw = '';
+    this.repostLongTextRaw = '';
+    if (mainId.length === 0 && repostId.length === 0) {
+      return;
+    }
+    const revision: number = this.viewRevision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
+    if (mainId.length > 0) {
+      const html: string = await WeiboService.getInstance().fetchLongText(mainId);
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      this.longTextRaw = html;
+    }
+    if (repostId.length > 0) {
+      const html: string = await WeiboService.getInstance().fetchLongText(repostId);
+      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+      this.repostLongTextRaw = html;
     }
   }
 
@@ -176,6 +230,55 @@ export struct WeiboPostDetail {
   private popRoute(): void {
     this.weiboNavStack.pop();
     syncWeiboSplitNavigation(this.weiboNavStack);
+  }
+
+  /**
+   * 正文 HTML -> 可点击分段。
+   * `rawText` 是接口原样返回的 HTML，`text` 是 stripHtml 后的纯文本；
+   * 优先用 rawText 才能还原 @/话题/链接/表情，缺失时退化为纯文本（裸链仍能被识别）。
+   */
+  private richSegments(raw: string | undefined, fallback: string): RichSegment[] {
+    const source: string = raw !== undefined && raw.length > 0 ? raw : fallback;
+    // 详情页永远不要「展开」这个假按钮：要么已经拿到全文，要么是接口的截断版，
+    // 后者也已经在进页面时补拉过全文，标记留着只会让人以为还能点。
+    return stripExpandMarker(parseWeiboRich(source));
+  }
+
+  /** 正文分段：优先用拉到（或 Service 里已缓存）的全文，没有再回落截断正文。 */
+  private postSegments(currentPost: WeiboPost): RichSegment[] {
+    if (this.longTextRaw.length > 0) {
+      return stripExpandMarker(parseWeiboRich(this.longTextRaw));
+    }
+    return this.richSegments(currentPost.rawText, currentPost.text);
+  }
+
+  /** 转发原文分段：同上。 */
+  private repostSegments(repost: WeiboPost): RichSegment[] {
+    if (this.repostLongTextRaw.length > 0) {
+      return stripExpandMarker(parseWeiboRich(this.repostLongTextRaw));
+    }
+    return this.richSegments(repost.rawText, repost.text);
+  }
+
+  /** 正文里的 @用户名：压一层用户主页进导航栈。 */
+  private openMention(uid: string, name: string): void {
+    const userId: string = uid.trim();
+    if (userId.length === 0) {
+      return;
+    }
+    const param: MentionRouteParam = { userId: userId, userName: name.trim() };
+    this.weiboNavStack.pushPath({ name: 'WeiboUserProfile', param: param });
+    syncWeiboSplitNavigation(this.weiboNavStack);
+  }
+
+  /** #话题#：本页在导航栈里，拿不到首页那个回调，改用 AppStorage 信号通知宿主导航页。 */
+  private openTopic(topic: string): void {
+    requestTopicSearch(topic);
+  }
+
+  /** 网页链接：交系统浏览器（见 common/ExternalLink）。 */
+  private openLink(url: string): void {
+    openExternalUrl(this.getUIContext(), url);
   }
 
   private async loadComments(append: boolean = false): Promise<void> {
@@ -390,13 +493,18 @@ export struct WeiboPostDetail {
           .alignItems(HorizontalAlign.Start)
         }
         .width('100%')
-        Text(this.post.text)
+        RichTextView({
+          segments: this.richSegments(this.post.rawText, this.post.text),
+          isDark: this.isDark,
+          fontSize: 16,
+          lineHeight: 24,
+          maxLines: 5,
+          fontScale: this.fontScale,
+          onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
+          onTopicTap: (topic: string): void => { this.openTopic(topic); },
+          onLinkTap: (url: string): void => { this.openLink(url); }
+        })
           .width('100%')
-          .fontSize(16)
-          .lineHeight(24)
-          .fontColor(Theme.textPrimary(this.isDark))
-          .maxLines(5)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.post.pictures.length > 0) {
           Image(this.post.pictures[0])
             .width('100%')
@@ -548,71 +656,21 @@ export struct WeiboPostDetail {
 
   @Builder
   PictureGrid(pictures: string[]) {
-    if (this.visiblePictureCount(pictures) === 1) {
-      Image(pictures[0])
-        .width('100%')
-        .height(260)
-        .constraintSize({ maxWidth: 460 })
-        .objectFit(ImageFit.Cover)
-        .borderRadius(Radius.md)
-        .onClick((): void => { this.openImagePreview(pictures, 0); })
-    } else if (this.visiblePictureCount(pictures) > 1) {
-      Grid() {
-        ForEach(pictures.slice(0, this.visiblePictureCount(pictures)), (picture: string, index: number): void => {
-          GridItem() {
-            Image(picture)
-              .width('100%')
-              .height(this.pictureCellHeight(pictures))
-              .objectFit(ImageFit.Cover)
-              .borderRadius(Radius.md)
-              .onClick((): void => { this.openImagePreview(pictures, index); })
-          }
-        }, (picture: string, index: number): string => `${index}`)
-      }
-      .columnsTemplate(this.pictureColumns(pictures) === 2 ? '1fr 1fr' : '1fr 1fr 1fr')
-      .columnsGap(Spacing.sm)
-      .rowsGap(Spacing.sm)
-      .width('100%')
-      .height(this.pictureGridHeight(pictures))
-      .constraintSize({ maxWidth: 460 })
-      .enableScrollInteraction(false)
-    }
+    PictureGallery({ pictures: pictures, isDark: this.isDark,
+      onPictureTap: (index: number): void => { this.openImagePreview(pictures, index); } })
+  }
+
+  /** 该帖是否同时带图和视频，且图不超过混排上限。 */
+  private useMixedMediaLayout(post: WeiboPost): boolean {
+    return post.videoUrl.length > 0
+      && post.pictures.length > 0
+      && post.pictures.length <= MIXED_MEDIA_MAX_PICTURES;
   }
 
   @Builder
   VideoPlayer(currentPost: WeiboPost) {
     if (currentPost.videoUrl.length > 0) {
-      Stack() {
-        Video({
-          src: currentPost.videoUrl,
-          previewUri: currentPost.videoCoverUrl,
-          controller: this.videoController
-        })
-          .width('100%')
-          .height(260)
-          .controls(true)
-          .autoPlay(false)
-          .loop(false)
-          .objectFit(ImageFit.Contain)
-          .backgroundColor(Color.Transparent)
-          .borderRadius(Radius.md)
-          .onError((): void => {
-            this.videoLoadFailed = true;
-          })
-        if (this.videoLoadFailed) {
-          Text('视频加载失败，请稍后重试')
-            .fontSize(fs(13, this.fontScale))
-            .fontColor(Color.White)
-            .padding(12)
-            .backgroundColor('#99000000')
-            .borderRadius(Radius.full)
-        }
-      }
-      .width('100%')
-      .height(260)
-      .backgroundColor(Color.Black)
-      .borderRadius(Radius.md)
-      .clip(true)
+      InlineVideo({ url: currentPost.videoUrl, cover: currentPost.videoCoverUrl })
     }
   }
 
@@ -633,11 +691,23 @@ export struct WeiboPostDetail {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .width('100%')
-      Text(repost.text)
-        .fontSize(fs(14, this.fontScale))
-        .lineHeight(fs(21, this.fontScale))
-        .fontColor(Theme.textPrimary(this.isDark))
+      RichTextView({
+        segments: this.repostSegments(repost),
+        isDark: this.isDark,
+        fontSize: 14,
+        lineHeight: 21,
+        fontScale: this.fontScale,
+        onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
+        onTopicTap: (topic: string): void => { this.openTopic(topic); },
+        onLinkTap: (url: string): void => { this.openLink(url); }
+      })
         .width('100%')
+      if (repost.isLongText === true && this.repostLongTextRaw.length === 0) {
+        Button('查看转发原文').onClick((): void => { this.openLink(this.postShareUrl(repost)); }, 8)
+      }
+      if (repost.videoUrl.length > 0 && this.post?.videoUrl !== repost.videoUrl) {
+        this.VideoPlayer(repost)
+      }
       if (repost.pictures.length > 0) {
         // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
         this.PictureGrid(repost.previewPictures ?? repost.pictures)
@@ -686,15 +756,39 @@ export struct WeiboPostDetail {
         .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
-      Text(currentPost.text)
-        .fontSize(fs(17, this.fontScale))
-        .lineHeight(fs(27, this.fontScale))
-        .fontColor(Theme.textPrimary(this.isDark))
+      RichTextView({
+        segments: this.postSegments(currentPost),
+        isDark: this.isDark,
+        fontSize: 17,
+        lineHeight: 27,
+        fontScale: this.fontScale,
+        onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
+        onTopicTap: (topic: string): void => { this.openTopic(topic); },
+        onLinkTap: (url: string): void => { this.openLink(url); }
+      })
         .width('100%')
-      this.VideoPlayer(currentPost)
-      if (currentPost.pictures.length > 0) {
-        // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
-        this.PictureGrid(currentPost.previewPictures ?? currentPost.pictures)
+      if (currentPost.isLongText === true && this.longTextRaw.length === 0) {
+        Button('查看微博原文').onClick((): void => { this.openLink(this.postShareUrl(currentPost)); }, 8)
+      }
+      // 图文混排帖（同时有图有视频）走「等宽正方形并排」，与信息流卡片同一套几何。
+      // 图超过 MIXED_MEDIA_MAX_PICTURES 张时不做混排：三列网格放不下，硬塞会藏图。
+      if (this.useMixedMediaLayout(currentPost)) {
+        MixedMediaTiles({
+          pictures: currentPost.pictures,
+          videoUrl: currentPost.videoUrl,
+          videoCoverUrl: currentPost.videoCoverUrl,
+          isDark: this.isDark,
+          fontScale: this.fontScale,
+          onPictureTap: (index: number): void => {
+            this.openImagePreview(currentPost.previewPictures ?? currentPost.pictures, index);
+          }
+        })
+      } else {
+        this.VideoPlayer(currentPost)
+        if (currentPost.pictures.length > 0) {
+          // 详情与预览使用高清档；缓存里无该字段的旧记录回退列表档
+          this.PictureGrid(currentPost.previewPictures ?? currentPost.pictures)
+        }
       }
       if (currentPost.repost !== null) {
         this.RepostCard(currentPost.repost)
@@ -769,10 +863,16 @@ export struct WeiboPostDetail {
                   .fontColor(Theme.textSecondary(this.isDark))
               }
               .width('100%')
-              Text(comment.text)
-                .fontSize(fs(14, this.fontScale))
-                .lineHeight(fs(21, this.fontScale))
-                .fontColor(Theme.textPrimary(this.isDark))
+              RichTextView({
+                segments: this.richSegments(comment.rawText, comment.text),
+                isDark: this.isDark,
+                fontSize: 14,
+                lineHeight: 21,
+                fontScale: this.fontScale,
+                onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
+                onTopicTap: (topic: string): void => { this.openTopic(topic); },
+                onLinkTap: (url: string): void => { this.openLink(url); }
+              })
                 .width('100%')
               Text(comment.createdAt)
                 .fontSize(fs(11, this.fontScale))
@@ -1039,6 +1139,7 @@ export struct WeiboPostDetail {
     HdsNavDestination() {
       this.DetailContent()
     }
+    .onHidden((): void => { AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, ''); })
     .titleMode(HdsNavDestinationTitleMode.MINI)
     .hideBackButton(true)
     .onBackPressed((): boolean => {

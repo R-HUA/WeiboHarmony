@@ -1,3 +1,5 @@
+import { InlineVideo } from './InlineVideo';
+import { PictureGallery } from './PictureGallery';
 /*
  * TiebaPura - HarmonyOS 原生 ArkTS 实现的第三方百度贴吧客户端
  * Copyright (C) 2026 a307608689-afk
@@ -17,6 +19,10 @@
  */
 
 import { Theme, Spacing, Radius, isDarkMode, ImmBlur, ImmMaterial, fs } from '../common/Theme';
+import { RichSegment, parseWeiboRich } from '../common/RichText';
+import { RichTextView } from './RichText';
+import { MIXED_MEDIA_MAX_PICTURES, MixedMediaTiles } from './MediaTiles';
+import { WeiboService } from '../service/WeiboService';
 import { ImageCache } from '../cache/ImageCache';
 import { curves, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -25,6 +31,9 @@ import { hdsEffect } from '@kit.UIDesignKit';
 const LOG_DOMAIN: number = 0x0A01;
 const TAG: string = 'TiebaImgCard';
 const MAX_URL_LOG: number = 120;
+
+/** 单列视频区高度（vp）。视频帖没走图文混排时用它撑满一行。 */
+const VIDEO_ROW_HEIGHT: number = 220;
 
 function shortUrl(url: string): string {
   return url.length > MAX_URL_LOG ? url.substring(0, MAX_URL_LOG) + '...' : url;
@@ -80,6 +89,38 @@ export interface ThreadItemData {
   createTime: string;
   isTop: boolean;
   isGood?: boolean;
+  /**
+   * 微博专用字段（贴吧调用方不填，渲染时自动回落到原来的 title/abstract 纯文本路径）。
+   *
+   * 微博卡片的内容层级与贴吧不同：贴吧是「标题 + 摘要」，微博是「一条完整正文」，
+   * 转发是「引述块」而不是缩小的摘要，设备名属于元信息行而不是底部来源标签。
+   */
+  richText?: RichSegment[];
+  /** 转发原文的分段；以 @原作者 开头（由页面拼好），渲染成引述块。 */
+  richRepost?: RichSegment[];
+  /** 发帖设备，形如「来自 iPhone 14 Pro Max」；仅在元信息行展示。 */
+  deviceLabel?: string;
+  /**
+   * 长文帖：列表接口只给截断正文，点正文末尾的「展开」需要再拉一次全文。
+   * richText 里由调用方追加好 RichKind.Expand 段。
+   */
+  isLongText?: boolean;
+  /** 转发原文的 postId 与是否长文；转发原文的「展开」要拉的是原帖全文。 */
+  repostId?: string;
+  repostLongText?: boolean;
+  /**
+   * 高清档图片地址，供原图预览使用（images 是列表档）。
+   * 点击回调统一以它为准，页面不必再去猜是列表档还是高清档。
+   */
+  previewImages?: string[];
+  /**
+   * 转发原文的媒体。桌面接口有时把转发原文的图/视频也挂在当前帖上（实测视频会重复），
+   * 所以调用方只在当前帖自身没有媒体时才填这几个字段——避免同一块内容出现两次。
+   */
+  repostImages?: string[];
+  repostPreviewImages?: string[];
+  repostVideoUrl?: string;
+  repostVideoCoverUrl?: string;
 }
 
 // 分享回调传入的帖子 payload，保证ArkTS对象字面量类型安全（禁止未声明类型的内联对象）
@@ -276,14 +317,24 @@ export struct ThreadCard {
   onAvatarTap: (authorId: string, author: string) => void = () => {};
   /** Parent-owned image navigation; non-Weibo callers retain their existing behavior. */
   onImageTap: (urls: string[], index: number) => void = () => {};
+  /** 正文里的 @用户名 / #话题# / 网页链接 点击；贴吧卡片不会触发。 */
+  onMentionTap: (uid: string, name: string) => void = () => {};
+  onTopicTap: (topic: string) => void = () => {};
+  onLinkTap: (url: string) => void = () => {};
   /**
    * 微博等非贴吧图床直接交给 ArkUI Image 加载。ImageCache 的下载策略带贴吧专用
    * Referer/Cookie，不能用于其它内容源。
    */
   @Prop skipImageCache: boolean = false;
-  private videoController: VideoController = new VideoController();
-  @State videoLoadFailed: boolean = false;
-
+  /**
+   * 长文「展开」后拿到的全文分段。
+   * 为空表示还没展开，正文仍走 item.richText（接口给的截断版 + 可点「展开」）。
+   */
+  @State private longTextSegments: RichSegment[] = [];
+  /** 转发原文展开后的全文分段；规则同上。 */
+  @State private repostLongTextSegments: RichSegment[] = [];
+  /** 展开请求进行中：避免连点重复拉取。 */
+  private expandingLongText: boolean = false;
   /**
    * 操作栏收紧判定（docs/TiebaPura阔直屏适配.md，2026-09-15 用户云调试反馈：阔直屏竖 2 列
    * 窄卡下分享/评论/点赞三胶囊「文字图标比按钮大」溢出）。
@@ -439,7 +490,30 @@ export struct ThreadCard {
   }
 
   aboutToAppear(): void {
+    this.seedCachedLongText();
     this.preloadImages();
+  }
+
+  /**
+   * 复用 Service 里已经拿到的长文全文。
+   *
+   * 场景：在信息流点过「展开」→ 进详情页 → 返回。卡片是重建的（@State 丢失），
+   * 如果不管，刚展开的正文会缩回截断态。Service 的缓存是同步可读的，这里补一次即可。
+   */
+  private seedCachedLongText(): void {
+    const item: ThreadItemData = this.getItem();
+    if (item.isLongText === true) {
+      const cached: string = WeiboService.getInstance().cachedLongText(item.tid);
+      if (cached.length > 0) {
+        this.longTextSegments = parseWeiboRich(cached);
+      }
+    }
+    if (item.repostId !== undefined && item.repostLongText === true) {
+      const cachedRepost: string = WeiboService.getInstance().cachedLongText(item.repostId);
+      if (cachedRepost.length > 0) {
+        this.repostLongTextSegments = parseWeiboRich(cachedRepost);
+      }
+    }
   }
 
   /** 通过 ImageCache（带贴吧 UA + Referer + Cookie）预下载图片到沙箱缓存 */
@@ -503,6 +577,97 @@ export struct ThreadCard {
     return 0;
   }
 
+  /** 微博卡片带了富文本分段才走新的正文渲染，贴吧卡片不受影响。 */
+  private hasRichBody(): boolean {
+    const segments: RichSegment[] | undefined = this.getItem().richText;
+    return segments !== undefined && segments.length > 0;
+  }
+
+  /**
+   * `@Prop` 不接受 undefined，这里统一收敛成空数组。
+   * 注意只在 hasRichBody()/hasRichRepost() 为真时才取，避免白建一棵空 Text。
+   */
+  /** 原图预览用的高清档列表；老数据缺该字段时回落到列表档。 */
+  private previewList(): string[] {
+    const item: ThreadItemData = this.getItem();
+    return item.previewImages ?? item.images ?? [];
+  }
+
+  private richBody(): RichSegment[] {
+    // 展开过就用全文；没展开仍用接口给的截断正文（末尾带可点「展开」）
+    if (this.longTextSegments.length > 0) {
+      return this.longTextSegments;
+    }
+    return this.getItem().richText ?? [];
+  }
+
+  /**
+   * 展开长文：拉全文，成功后原地替换正文。
+   *
+   * 详情页在进入时就会拉同一份，Service 里有缓存/在飞合并，这里点到时通常直接命中。
+   * 两条路都失败就保留截断正文并给一次 Toast——不要变成空白，用户至少还能看到摘要。
+   */
+  private expandLongText(target: string): void {
+    if (this.expandingLongText) {
+      return;
+    }
+    const item: ThreadItemData = this.getItem();
+    // 转发的「展开」拉的是原帖全文，正文的「展开」拉当前帖；空 target 兜底成当前帖
+    const postId: string = target.length > 0 ? target : item.tid;
+    const service: WeiboService = WeiboService.getInstance();
+    const cached: string = service.cachedLongText(postId);
+    if (cached.length > 0) {
+      this.applyLongText(postId, parseWeiboRich(cached));
+      return;
+    }
+    this.expandingLongText = true;
+    service.fetchLongText(postId).then((html: string): void => {
+      this.expandingLongText = false;
+      if (html.length > 0) {
+        this.applyLongText(postId, parseWeiboRich(html));
+      } else {
+        this.getUIContext().getPromptAction().showToast({ message: '全文加载失败，请稍后重试' });
+      }
+    }).catch((): void => {
+      this.expandingLongText = false;
+      this.getUIContext().getPromptAction().showToast({ message: '全文加载失败，请稍后重试' });
+    });
+  }
+
+  private applyLongText(postId: string, segments: RichSegment[]): void {
+    if (postId === this.getItem().tid) {
+      this.longTextSegments = segments;
+    } else {
+      this.repostLongTextSegments = segments;
+    }
+  }
+
+  private richRepostSegments(): RichSegment[] {
+    if (this.repostLongTextSegments.length > 0) {
+      return this.repostLongTextSegments;
+    }
+    return this.getItem().richRepost ?? [];
+  }
+
+  private hasRichRepost(): boolean {
+    const segments: RichSegment[] | undefined = this.getItem().richRepost;
+    return segments !== undefined && segments.length > 0;
+  }
+
+  /**
+   * 元信息行：时间 + 发帖设备。
+   * 设备名属于作者信息的同一行（官方即「5小时前 来自 iPhone 14 Pro Max」），
+   * 放在卡片左下角会被误读成"来源/吧名"。
+   */
+  private metaLine(): string {
+    const item: ThreadItemData = this.getItem();
+    const device: string = item.deviceLabel ?? '';
+    if (device.length === 0) {
+      return item.createTime;
+    }
+    return item.createTime.length > 0 ? `${item.createTime} · ${device}` : device;
+  }
+
   private updateContentPress(event?: TouchEvent): void {
     if (event === undefined) {
       return;
@@ -561,9 +726,11 @@ export struct ThreadCard {
                 // 点击作者名跳用户主页（Block 阻断冒泡，避免触发整卡跳详情）
                 this.onAvatarTap(this.getItem().authorId ?? '', this.getItem().author);
               })
-            Text(this.getItem().createTime)
+            Text(this.metaLine())
               .fontSize(fs(12, this.fontScale))
               .fontColor(Theme.textTertiary(isDarkMode()))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
@@ -571,43 +738,107 @@ export struct ThreadCard {
         .width('100%')
         .padding({ left: 16, right: 16, top: 16 })
 
-        // 标题
-        Text(this.getItem().title)
-          .fontSize(fs(17, this.fontScale))
-          .fontWeight(FontWeight.Bold)
-          .fontColor(Theme.textPrimary(isDarkMode()))
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 8 })
-
-        // 正文摘要：多列档降为 2 行（列窄、一屏要放下更多卡），单列逐像素维持现状 4 行
-        if (this.getItem().abstract.length > 0) {
-          Text(this.getItem().abstract)
-            .fontSize(fs(14, this.fontScale))
-            .fontColor(Theme.textSecondary(isDarkMode()))
-            .maxLines(this.cardColumns > 1 ? 2 : 4)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 6 })
-        }
-
-        // 视频优先用系统 Video 播放器承载，避免将视频帖误当作静态封面图。
-        if (this.getItem().videoUrl !== undefined && this.getItem().videoUrl!.length > 0) {
+        // 正文。
+        // 微博走富文本：正常字重、完整展示（官方首页正文就是正文，不是"加粗大标题"），
+        // 且 @用户名 / #话题# / 网页链接 可点击。贴吧卡片保持不变：标题+摘要两段。
+        if (this.hasRichBody()) {
           Column() {
-            this.VideoPlayer()
-          }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 10 })
-        }
-
-        // 图片区域
-        if (this.getImageCount() > 0) {
-          Column() {
-            this.ImageGallery()
+            RichTextView({
+              segments: this.richBody(),
+              isDark: isDarkMode(),
+              fontSize: 16,
+              lineHeight: 24,
+              fontScale: this.fontScale,
+              onMentionTap: (uid: string, name: string): void => { this.onMentionTap(uid, name); },
+              onTopicTap: (topic: string): void => { this.onTopicTap(topic); },
+              onLinkTap: (url: string): void => { this.onLinkTap(url); },
+              onExpandTap: (target: string): void => { this.expandLongText(target); }
+            })
           }
           .width('100%')
           .padding({ left: 16, right: 16, top: 10 })
+        } else {
+          Text(this.getItem().title)
+            .fontSize(fs(17, this.fontScale))
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Theme.textPrimary(isDarkMode()))
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 8 })
+
+          // 正文摘要：多列档降为 2 行（列窄、一屏要放下更多卡），单列逐像素维持现状 4 行
+          if (this.getItem().abstract.length > 0) {
+            Text(this.getItem().abstract)
+              .fontSize(fs(14, this.fontScale))
+              .fontColor(Theme.textSecondary(isDarkMode()))
+              .maxLines(this.cardColumns > 1 ? 2 : 4)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 6 })
+          }
+        }
+
+        // 转发原文：官方是「@原作者：原文」的引述块（浅底、与正文同字号），
+        // 不是正文下面一段更小的灰字——那样看起来跟正文连成一体，分不清哪段是转发。
+        if (this.hasRichRepost()) {
+          Column() {
+            RichTextView({
+              segments: this.richRepostSegments(),
+              isDark: isDarkMode(),
+              fontSize: 15,
+              lineHeight: 23,
+              secondary: true,
+              fontScale: this.fontScale,
+              onMentionTap: (uid: string, name: string): void => { this.onMentionTap(uid, name); },
+              onTopicTap: (topic: string): void => { this.onTopicTap(topic); },
+              onLinkTap: (url: string): void => { this.onLinkTap(url); },
+              onExpandTap: (target: string): void => { this.expandLongText(target); }
+            })
+            // 转发原文自带图/视频时，缩略图渲染在引述块内部——官方就是这样，
+            // 之前只渲染了当前帖的媒体，转发原文的图整块丢失。
+            if (this.hasRepostMedia()) {
+              this.RepostMedia()
+            }
+          }
+          .width('100%')
+          .padding(10)
+          .margin({ left: 16, right: 16, top: 10 })
+          .backgroundColor(Theme.bgSurface(isDarkMode()))
+          .borderRadius(Radius.md)
+        }
+
+        // ========== 媒体区 ==========
+        // 混合媒体与其它帖子统一为图片网格、视频独占一行。
+        if (this.useMixedMediaLayout()) {
+          Column() {
+            this.MixedMediaRow()
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 10 })
+        } else {
+          if (this.getItem().videoUrl !== undefined && this.getItem().videoUrl!.length > 0) {
+            Column() {
+              Column() {
+                this.VideoPlayer()
+              }
+              .width('100%')
+              .height(VIDEO_ROW_HEIGHT)
+              .borderRadius(Radius.md)
+              .clip(true)
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 10 })
+          }
+
+          // 图片区域
+          if (this.getImageCount() > 0) {
+            Column() {
+              this.ImageGallery()
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 10 })
+          }
         }
 
         // 吧标签
@@ -806,52 +1037,65 @@ export struct ThreadCard {
     }
   }
 
+  /** Shared player owns activation, gestures and offscreen cleanup. */
   @Builder
   VideoPlayer() {
-    Stack() {
-      Video({
-        src: this.getItem().videoUrl ?? '',
-        previewUri: this.getItem().videoCoverUrl ?? '',
-        controller: this.videoController
-      })
-        .width('100%')
-        .height(220)
-        .controls(true)
-        .autoPlay(false)
-        .loop(false)
-        .objectFit(ImageFit.Contain)
-        .backgroundColor(Color.Transparent)
-        .borderRadius(Radius.md)
-        .onError((): void => {
-          this.videoLoadFailed = true;
-        })
-      if (this.videoLoadFailed) {
-        Column({ space: 8 }) {
-          Text('视频暂时无法播放')
-            .fontSize(fs(13, this.fontScale))
-            .fontColor(Color.White)
-          Text('请稍后重试')
-            .fontSize(fs(12, this.fontScale))
-            .fontColor('#CCFFFFFF')
-        }
-        .width('100%')
-        .height(220)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
-        .borderRadius(Radius.md)
+    InlineVideo({ url: this.getItem().videoUrl ?? '', cover: this.getItem().videoCoverUrl ?? '' })
+  }
+
+  /** 引述块里是否需要补渲染转发原文的媒体。 */
+  private hasRepostMedia(): boolean {
+    const item: ThreadItemData = this.getItem();
+    const pictures: number = (item.repostImages ?? []).length;
+    const video: string = item.repostVideoUrl ?? '';
+    return pictures > 0 || video.length > 0;
+  }
+
+  /** Repost images use the same nine-cell gallery; video always has its own row. */
+  @Builder
+  RepostMedia() {
+    MixedMediaTiles({
+      pictures: this.getItem().repostImages ?? [],
+      videoUrl: this.getItem().repostVideoUrl ?? '',
+      videoCoverUrl: this.getItem().repostVideoCoverUrl ?? '',
+      isDark: isDarkMode(),
+      fontScale: this.fontScale,
+      onPictureTap: (index: number): void => {
+        this.onImageTap(this.getItem().repostPreviewImages ?? this.getItem().repostImages ?? [], index);
       }
-    }
-    .width('100%')
-    .height(220)
-    .backgroundColor(Color.Black)
-    .borderRadius(Radius.md)
-    .clip(true)
+    })
+  }
+
+  /** Keep the existing mixed-media route; its shared renderer expands the video row. */
+  private useMixedMediaLayout(): boolean {
+    const video: string = this.getItem().videoUrl ?? '';
+    const pictures: number = this.getImageCount();
+    const useMixed: boolean = video.length > 0 && pictures > 0 && pictures <= MIXED_MEDIA_MAX_PICTURES;
+    return useMixed;
+  }
+
+  /** Shared picture grid followed by a full-width player. */
+  @Builder
+  MixedMediaRow() {
+    MixedMediaTiles({
+      // @Prop 不收 undefined；这里的 images 在 useMixedMediaLayout() 为真时必定存在
+      pictures: this.getItem().images ?? [],
+      videoUrl: this.getItem().videoUrl ?? '',
+      videoCoverUrl: this.getItem().videoCoverUrl ?? '',
+      isDark: isDarkMode(),
+      fontScale: this.fontScale,
+      onPictureTap: (index: number): void => {
+        this.onImageTap(this.previewList(), index);
+      }
+    })
   }
 
   @Builder
   ImageGallery() {
-    if (this.imageFailed) {
+    if (this.skipImageCache) {
+      PictureGallery({ pictures: this.getItem().images ?? [], isDark: isDarkMode(),
+        onPictureTap: (index: number): void => { this.onImageTap(this.previewList(), index); } })
+    } else if (this.imageFailed) {
       // 降级：图加载失败时不渲染大图区，避免占位看起来像"没图"；改为作者头像缩略 + 提示
       Row({ space: 10 }) {
         if (this.getItem().authorAvatar && this.getItem().authorAvatar!.length > 0) {
@@ -896,7 +1140,7 @@ export struct ThreadCard {
                 this.handleSingleImageComplete(event.loadingStatus, event.width, event.height);
               })
               .onClick(() => {
-                this.onImageTap(this.getItem().images!, 0);
+                this.onImageTap(this.previewList(), 0);
               })
           } else {
             Image(this.resolveImgUrl(this.getItem().images![0]))
@@ -912,7 +1156,7 @@ export struct ThreadCard {
                 this.handleSingleImageComplete(event.loadingStatus, event.width, event.height);
               })
               .onClick(() => {
-                this.onImageTap(this.getItem().images!, 0);
+                this.onImageTap(this.previewList(), 0);
               })
           }
         } else {
@@ -940,7 +1184,7 @@ export struct ThreadCard {
                       this.handleGridImageComplete(img, event.loadingStatus, event.width, event.height);
                     })
                     .onClick(() => {
-                      this.onImageTap(this.getItem().images!, idx);
+                      this.onImageTap(this.previewList(), idx);
                     })
                 } else {
                   Image(this.resolveImgUrl(img))
@@ -956,7 +1200,7 @@ export struct ThreadCard {
                       this.handleGridImageComplete(img, event.loadingStatus, event.width, event.height);
                     })
                     .onClick(() => {
-                      this.onImageTap(this.getItem().images!, idx);
+                      this.onImageTap(this.previewList(), idx);
                     })
                 }
               }

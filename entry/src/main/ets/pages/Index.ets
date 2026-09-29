@@ -1,3 +1,4 @@
+import { ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { curves, LengthMetrics, SymbolGlyphModifier } from '@kit.ArkUI';
 import {
@@ -16,7 +17,7 @@ import { CacheManager } from '../cache/CacheManager';
 import { ImmBlur, ImmMaterial, MaterialManager, Radius, Spacing, Theme, fs, initDarkMode, isDarkMode } from '../common/Theme';
 import { UsageHabitsManager } from '../service/UsageHabitsManager';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
-import { AppSettingsStore, DEFAULT_HOME_TAB_MATERIAL_LEVEL } from '../service/AppSettingsStore';
+import { AppSettingsStore, DEFAULT_HIDE_UNSUPPORTED, DEFAULT_HOME_TAB_MATERIAL_LEVEL } from '../service/AppSettingsStore';
 import { WeiboService } from '../service/WeiboService';
 import { WeiboPost, WeiboUser } from '../model/WeiboModel';
 import { WeiboHomeTab, WeiboTimelineMode } from './WeiboHomeTab';
@@ -31,6 +32,8 @@ import {
   WEIBO_CONTENT_DESTINATION_OPEN_KEY,
   WeiboResponsiveLayout
 } from '../common/WeiboNavigationLayout';
+import { TOPIC_REQUEST_KEY } from '../common/Constants';
+import { topicFromRequest } from '../common/TopicRequest';
 
 const PRIVACY_KEY: string = 'weibopura_privacy_agreed_v1';
 const HDS_TAB_BAR_HEIGHT: number = 56;
@@ -67,7 +70,25 @@ struct Index {
   @State mineTranslateX: number = 0;
   @State mineOpacity: number = 1;
   @State mineAnimating: boolean = false;
+  /**
+   * 首页信息流分段：推荐 / 关注。
+   * 初值给「推荐」只是保守兜底，真正的默认值由 applyDefaultHomeMode() 在首帧之前定下来
+   * （登录态决定：有 Cookie 进关注，游客进推荐）。
+   */
+  @State recommendPending: boolean = false;
+  @State followingPending: boolean = false;
+  @State acceptHomeUpdateTrigger: number = 0;
+
+  private selectHomeMode(mode: WeiboTimelineMode): void {
+    AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, '');
+    if (this.homeMode === mode) { this.acceptHomeUpdateTrigger++; }
+    this.homeModeChosen = true;
+    this.homeMode = mode;
+  }
+
   @State homeMode: WeiboTimelineMode = WeiboTimelineMode.Recommend;
+  /** 用户是否手动切过分段。切过之后启动逻辑不再覆盖，否则刚点完就被弹回去。 */
+  private homeModeChosen: boolean = false;
   @State privacyReady: boolean = false;
   @State privacyAccepted: boolean = false;
   @State isDark: boolean = isDarkMode();
@@ -89,7 +110,15 @@ struct Index {
   @StorageLink('appAccentTick') @Watch('onAccentTick') appAccentTick: number = 0;
   @StorageLink('homeTabMaterialLevel') @Watch('onHomeTabMaterialChanged')
   homeTabMaterialLevel: number = DEFAULT_HOME_TAB_MATERIAL_LEVEL;
+  /**
+   * 当前版本尚未实现「消息」页签与「我的收藏 / 我的点赞」，默认隐藏。
+   * 这是一个位置索引开关：先移除被隐藏的页签，再把逻辑页签映射到 HdsTabs 的位置。
+   */
+  @StorageLink('hideUnsupportedFeatures') @Watch('onHideUnsupportedChanged')
+  hideUnsupported: boolean = DEFAULT_HIDE_UNSUPPORTED;
   @StorageLink('weiboSearchQuery') weiboSearchText: string = '';
+  /** 栈内页面（详情页/用户主页）点 #话题# 时写入的检索请求，见 common/TopicRequest.ets。 */
+  @StorageLink(TOPIC_REQUEST_KEY) @Watch('onTopicRequest') topicRequest: string = '';
   @State searchFocusScale: number = 1;
   @State searchFocusOpacity: number = 0.92;
   @StorageLink('weibo.top_rect_height') topRectHeight: number = 0;
@@ -123,11 +152,15 @@ struct Index {
     initDarkMode(systemDark);
     const cache: CacheManager = CacheManager.getInstance();
     await cache.init(this.context);
-    this.privacyAccepted = (await cache.get(PRIVACY_KEY)) === '1';
-    this.privacyReady = true;
-    if (this.privacyAccepted) {
+    const accepted: boolean = (await cache.get(PRIVACY_KEY)) === '1';
+    if (accepted) {
+      // 先把账号态与默认信息流解析完，再放行首帧。
+      // 否则首帧会落在「推荐」、几十毫秒后才跳到「关注」，用户能看见一次分段闪动。
+      // 这一段仍在隐私门之下（privacyReady 未置位、privacyAccepted 未置位），不会多出可见空白。
       await this.initAfterPrivacyConsent();
     }
+    this.privacyAccepted = accepted;
+    this.privacyReady = true;
   }
 
   private async initAfterPrivacyConsent(): Promise<void> {
@@ -147,8 +180,9 @@ struct Index {
 
   private async acceptPrivacy(): Promise<void> {
     await CacheManager.getInstance().put(PRIVACY_KEY, '1');
-    this.privacyAccepted = true;
+    // 同理：账号态解析完再放行，避免刚同意完就先闪一下「推荐」
     await this.initAfterPrivacyConsent();
+    this.privacyAccepted = true;
   }
 
   private onDarkTick(): void {
@@ -179,6 +213,7 @@ struct Index {
 
   /** HarmonyX routing order: prepare the root split before adding a child destination. */
   private openContentDestination(): void {
+    AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, '');
     this.contentDestinationOpen = true;
     AppStorage.setOrCreate<boolean>(WEIBO_CONTENT_DESTINATION_OPEN_KEY, true);
     this.updateNavigationMode();
@@ -202,6 +237,40 @@ struct Index {
     this.configureHdsTabs();
   }
 
+  /**
+   * 底部导航实际渲染的逻辑页签。隐藏未支持功能时去掉「消息」，
+   * 因此 HdsTabs 的位置索引与 WeiboTab 不再一一对应，必须经过下面的双向映射。
+   */
+  private visibleTabs(): number[] {
+    if (this.hideUnsupported) {
+      return [WeiboTab.Home, WeiboTab.Discover, WeiboTab.Search, WeiboTab.Mine];
+    }
+    return [WeiboTab.Home, WeiboTab.Discover, WeiboTab.Search, WeiboTab.Messages, WeiboTab.Mine];
+  }
+
+  /** 逻辑页签 → HdsTabs 位置索引；已隐藏的页签回落到首页。 */
+  private toTabIndex(tab: number): number {
+    const index: number = this.visibleTabs().indexOf(tab);
+    return index < 0 ? 0 : index;
+  }
+
+  /** HdsTabs 位置索引 → 逻辑页签。 */
+  private fromTabIndex(index: number): number {
+    const tabs: number[] = this.visibleTabs();
+    return index >= 0 && index < tabs.length ? tabs[index] : WeiboTab.Home;
+  }
+
+  /**
+   * 开关切换时要处理两件事：正在「消息」页签上时原地回首页（否则该页签已不存在，
+   * 标题与内容会脱节），以及让 HdsTabs 按新的页签数量重排。
+   */
+  private onHideUnsupportedChanged(): void {
+    if (this.hideUnsupported && this.selectedTab === WeiboTab.Messages) {
+      this.selectedTab = WeiboTab.Home;
+      this.hdsTabsController.changeIndex(this.toTabIndex(WeiboTab.Home));
+    }
+  }
+
   aboutToDisappear(): void {
     this.hdsTabsController.unbindScroller(this.discoverScroller);
     this.hdsTabsController.unbindScroller(this.searchScroller);
@@ -219,6 +288,21 @@ struct Index {
 
   private refreshWeiboAccount(): void {
     this.cookieConfigured = WeiboAuthManager.getInstance().hasCookie();
+    this.applyDefaultHomeMode();
+  }
+
+  /**
+   * 冷启动/登录态变化后定默认信息流：**有账号 Cookie 就进「关注」**。
+   *
+   * 关注流是登录账号自己的时间线，官方客户端首屏也是它；但游客态没有 Cookie，
+   * 关注流只会落到错误页（见 openFollowing 的登录校验），这时保持「推荐」。
+   * 用户手动切过分段一律不覆盖。
+   */
+  private applyDefaultHomeMode(): void {
+    if (this.homeModeChosen) {
+      return;
+    }
+    this.homeMode = this.cookieConfigured ? WeiboTimelineMode.Following : WeiboTimelineMode.Recommend;
   }
 
   /** Loads the account represented by the saved Cookie; public feeds remain usable when it fails. */
@@ -244,10 +328,13 @@ struct Index {
   }
 
   /** Programmatic selection is shared by the title-bar search shortcut and HdsTabs. */
+  onPageHide(): void { AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, ''); }
+
   private switchTab(index: number): void {
     if (index === this.selectedTab) {
       return;
     }
+    AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, '');
     this.selectedTab = index;
     if (index === WeiboTab.Mine) {
       this.refreshWeiboAccount();
@@ -472,6 +559,37 @@ struct Index {
       (AppStorage.get<number>('weiboSearchRequestTick') ?? 0) + 1);
   }
 
+  /**
+   * 信息流卡片里点 #话题#：切到搜索页并把话题词直接搜掉。
+   * `weiboSearchText` 本身就是 `weiboSearchQuery` 的 StorageLink，
+   * 所以调用 submitWeiboSearch 就够了——搜索页的 @Watch 会拿新关键词发起请求。
+   */
+  private openTopicSearch(topic: string): void {
+    const keyword: string = topic.trim();
+    if (keyword.length === 0) {
+      return;
+    }
+    this.switchTab(WeiboTab.Search);
+    this.submitWeiboSearch(keyword);
+  }
+
+  /**
+   * 栈内页面（详情页、用户主页）请求检索话题：它们在 Navigation 栈里，
+   * 拿不到 onOpenTopic 回调，只能通过 AppStorage 信号通知这里。
+   * 先清栈退回首页再切搜索页，否则搜索结果会被详情页盖住看不见。
+   */
+  private onTopicRequest(): void {
+    const topic: string = topicFromRequest(this.topicRequest);
+    if (topic.length === 0) {
+      return;
+    }
+    if (this.weiboNavStack.size() > 0) {
+      this.weiboNavStack.clear();
+      syncWeiboSplitNavigation(this.weiboNavStack);
+    }
+    this.openTopicSearch(topic);
+  }
+
   private setSearchFocused(focused: boolean): void {
     this.getUIContext().animateTo({ curve: curves.interpolatingSpring(0, 1, 240, 26) }, (): void => {
       this.searchFocusScale = focused ? 1.015 : 1;
@@ -592,7 +710,8 @@ struct Index {
   @Builder
   HomeHeaderOverlay() {
     Row({ space: 16 }) {
-      Text($r('app.string.weibo_recommend_title'))
+      Text((this.homeMode === WeiboTimelineMode.Recommend && this.recommendPending) ? $r('app.string.weibo_recommend_updated') : $r('app.string.weibo_recommend_title'))
+        .accessibilityText((this.homeMode === WeiboTimelineMode.Recommend && this.recommendPending) ? $r('app.string.weibo_recommend_updated_accessibility') : $r('app.string.weibo_recommend_title'))
         .fontSize(fs(16, this.fontScale))
         .fontWeight(this.homeMode === WeiboTimelineMode.Recommend ? FontWeight.Bold : FontWeight.Medium)
         .fontColor(this.homeMode === WeiboTimelineMode.Recommend ? this.accentColor : $r('sys.color.font_primary'))
@@ -603,8 +722,9 @@ struct Index {
         .shadow(Theme.segGlassShadow(this.isDark, this.homeMode === WeiboTimelineMode.Recommend))
         .borderRadius(Radius.full)
         .padding({ left: 22, right: 22, top: 9, bottom: 9 })
-        .onClick(() => { this.homeMode = WeiboTimelineMode.Recommend; })
-      Text($r('app.string.weibo_following_title'))
+        .onClick(() => { this.selectHomeMode(WeiboTimelineMode.Recommend); })
+      Text((this.homeMode === WeiboTimelineMode.Following && this.followingPending) ? $r('app.string.weibo_following_updated') : $r('app.string.weibo_following_title'))
+        .accessibilityText((this.homeMode === WeiboTimelineMode.Following && this.followingPending) ? $r('app.string.weibo_following_updated_accessibility') : $r('app.string.weibo_following_title'))
         .fontSize(fs(16, this.fontScale))
         .fontWeight(this.homeMode === WeiboTimelineMode.Following ? FontWeight.Bold : FontWeight.Medium)
         .fontColor(this.homeMode === WeiboTimelineMode.Following ? this.accentColor : $r('sys.color.font_primary'))
@@ -615,7 +735,7 @@ struct Index {
         .shadow(Theme.segGlassShadow(this.isDark, this.homeMode === WeiboTimelineMode.Following))
         .borderRadius(Radius.full)
         .padding({ left: 22, right: 22, top: 9, bottom: 9 })
-        .onClick(() => { this.homeMode = WeiboTimelineMode.Following; })
+        .onClick(() => { this.selectHomeMode(WeiboTimelineMode.Following); })
       Blank()
       Button() {
         SymbolGlyph($r('sys.symbol.magnifyingglass'))
@@ -646,6 +766,8 @@ struct Index {
         Stack() {
           WeiboHomeTab({
             mode: WeiboTimelineMode.Recommend,
+            acceptUpdateTrigger: this.acceptHomeUpdateTrigger,
+            onPendingChanged: (pending: boolean): void => { this.recommendPending = pending; },
             showHeader: false,
             topInset: 108,
             bottomInset: 128,
@@ -654,7 +776,8 @@ struct Index {
             scrollTopTrigger: this.homeScrollTopTrigger,
             isActive: this.homeMode === WeiboTimelineMode.Recommend,
             onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
-            onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName)
+            onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName),
+            onOpenTopic: (topic: string): void => this.openTopicSearch(topic)
           })
         }
         .width('100%')
@@ -663,6 +786,8 @@ struct Index {
         Stack() {
           WeiboHomeTab({
             mode: WeiboTimelineMode.Following,
+            acceptUpdateTrigger: this.acceptHomeUpdateTrigger,
+            onPendingChanged: (pending: boolean): void => { this.followingPending = pending; },
             showHeader: false,
             topInset: 108,
             bottomInset: 128,
@@ -671,7 +796,8 @@ struct Index {
             scrollTopTrigger: this.homeScrollTopTrigger,
             isActive: this.homeMode === WeiboTimelineMode.Following,
             onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
-            onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName)
+            onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName),
+            onOpenTopic: (topic: string): void => this.openTopicSearch(topic)
           })
         }
         .width('100%')
@@ -688,22 +814,24 @@ struct Index {
   @Builder
   HomeTitleBar() {
     Row({ space: 16 }) {
-      Text($r('app.string.weibo_recommend_title'))
+      Text((this.homeMode === WeiboTimelineMode.Recommend && this.recommendPending) ? $r('app.string.weibo_recommend_updated') : $r('app.string.weibo_recommend_title'))
+        .accessibilityText((this.homeMode === WeiboTimelineMode.Recommend && this.recommendPending) ? $r('app.string.weibo_recommend_updated_accessibility') : $r('app.string.weibo_recommend_title'))
         .fontSize(fs(16, this.fontScale))
         .fontWeight(this.homeMode === WeiboTimelineMode.Recommend ? FontWeight.Bold : FontWeight.Medium)
         .fontColor(this.homeMode === WeiboTimelineMode.Recommend ? this.accentColor : $r('sys.color.font_primary'))
         .systemMaterial(ImmMaterial.seg(this.homeMode === WeiboTimelineMode.Recommend))
         .borderRadius(Radius.full)
         .padding({ left: 22, right: 22, top: 9, bottom: 9 })
-        .onClick(() => { this.homeMode = WeiboTimelineMode.Recommend; })
-      Text($r('app.string.weibo_following_title'))
+        .onClick(() => { this.selectHomeMode(WeiboTimelineMode.Recommend); })
+      Text((this.homeMode === WeiboTimelineMode.Following && this.followingPending) ? $r('app.string.weibo_following_updated') : $r('app.string.weibo_following_title'))
+        .accessibilityText((this.homeMode === WeiboTimelineMode.Following && this.followingPending) ? $r('app.string.weibo_following_updated_accessibility') : $r('app.string.weibo_following_title'))
         .fontSize(fs(16, this.fontScale))
         .fontWeight(this.homeMode === WeiboTimelineMode.Following ? FontWeight.Bold : FontWeight.Medium)
         .fontColor(this.homeMode === WeiboTimelineMode.Following ? this.accentColor : $r('sys.color.font_primary'))
         .systemMaterial(ImmMaterial.seg(this.homeMode === WeiboTimelineMode.Following))
         .borderRadius(Radius.full)
         .padding({ left: 22, right: 22, top: 9, bottom: 9 })
-        .onClick(() => { this.homeMode = WeiboTimelineMode.Following; })
+        .onClick(() => { this.selectHomeMode(WeiboTimelineMode.Following); })
       Blank()
       Button() {
         SymbolGlyph($r('sys.symbol.magnifyingglass'))
@@ -947,12 +1075,15 @@ struct Index {
 
         this.MineEntry($r('sys.symbol.doc'), '我的微博', '读取当前登录账号发布的微博', () => { this.openMyPosts(); })
         this.MineEntry($r('sys.symbol.person_2'), '关注动态', '查看我关注的用户最新微博', () => { this.openFollowing(); })
-        this.MineEntry($r('sys.symbol.star'), '我的收藏', '微博公开接口暂不返回收藏列表', () => {
-          this.getUIContext().getPromptAction().showToast({ message: '微博公开接口暂不提供“我的收藏”列表' });
-        })
-        this.MineEntry($r('sys.symbol.heart'), '我的点赞', '支持在微博详情中点赞或取消点赞', () => {
-          this.getUIContext().getPromptAction().showToast({ message: '微博接口支持单条点赞，暂未提供点赞历史列表' });
-        })
+        // 这两项依赖微博尚未开放的能力，默认隐藏；关闭开关后恢复显示。
+        if (!this.hideUnsupported) {
+          this.MineEntry($r('sys.symbol.star'), '我的收藏', '微博公开接口暂不返回收藏列表', () => {
+            this.getUIContext().getPromptAction().showToast({ message: '微博公开接口暂不提供“我的收藏”列表' });
+          })
+          this.MineEntry($r('sys.symbol.heart'), '我的点赞', '支持在微博详情中点赞或取消点赞', () => {
+            this.getUIContext().getPromptAction().showToast({ message: '微博接口支持单条点赞，暂未提供点赞历史列表' });
+          })
+        }
         this.MineEntry($r('sys.symbol.arrow_clockwise'), '刷新账号资料', '重新读取昵称、头像和统计数据', () => { this.loadAccountProfile(); })
         this.MineEntry($r('sys.symbol.gearshape'), '软件设置', '主题色、应用语言与深浅色模式', () => { this.openSettings(); })
         this.MineEntry($r('sys.symbol.info_circle'), $r('app.string.weibo_software_about_entry'),
@@ -1047,10 +1178,14 @@ struct Index {
     }
     .tabBar(this.hdsTabBar(this.symbolFor(WeiboTab.Search), $r('app.string.weibo_tab_search')))
 
-    TabContent() {
-      this.MessagesPage()
+    // 「消息」页签在当前版本尚未实现，隐藏时直接不渲染该 TabContent，
+    // 页签数量随之变化，因此所有索引都要经 fromTabIndex / toTabIndex 换算。
+    if (!this.hideUnsupported) {
+      TabContent() {
+        this.MessagesPage()
+      }
+      .tabBar(this.hdsTabBar(this.symbolFor(WeiboTab.Messages), $r('app.string.weibo_tab_messages')))
     }
-    .tabBar(this.hdsTabBar(this.symbolFor(WeiboTab.Messages), $r('app.string.weibo_tab_messages')))
 
     TabContent() {
       this.MinePage()
@@ -1079,7 +1214,7 @@ struct Index {
 
   @Builder
   HdsTabsShell() {
-    HdsTabs({ controller: this.hdsTabsController, index: this.selectedTab }) {
+    HdsTabs({ controller: this.hdsTabsController, index: this.toTabIndex(this.selectedTab) }) {
       this.HdsTabContents()
     }
     .width('100%')
@@ -1092,13 +1227,13 @@ struct Index {
     .backgroundColor(Theme.bg(this.isDark))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .onChange((index: number): void => {
-      this.switchTab(index);
+      this.switchTab(this.fromTabIndex(index));
     })
     .onTabBarClick((index: number): void => {
-      this.onTabBarClick(index);
+      this.onTabBarClick(this.fromTabIndex(index));
     })
     .onAnimationStart((currentIndex: number, targetIndex: number, event: TabsAnimationEvent): void => {
-      this.onTabAnimationStart(currentIndex, targetIndex, event);
+      this.onTabAnimationStart(this.fromTabIndex(currentIndex), this.fromTabIndex(targetIndex), event);
     })
   }
 

@@ -5,6 +5,7 @@ import {
   AppSettingsStore,
   APP_LANGUAGE_EN,
   APP_LANGUAGE_ZH_CN,
+  DEFAULT_HIDE_UNSUPPORTED,
   DEFAULT_HOME_TAB_MATERIAL_LEVEL
 } from '../service/AppSettingsStore';
 import { UsageHabitsManager } from '../service/UsageHabitsManager';
@@ -21,6 +22,7 @@ export struct WeiboSettings {
   @StorageLink('appAccentColor') accentColor: string = '#E6162D';
   @StorageLink('appLanguage') appLanguage: string = APP_LANGUAGE_ZH_CN;
   @StorageLink('homeTabMaterialLevel') homeTabMaterialLevel: number = DEFAULT_HOME_TAB_MATERIAL_LEVEL;
+  @StorageLink('hideUnsupportedFeatures') hideUnsupported: boolean = DEFAULT_HIDE_UNSUPPORTED;
   @StorageLink('columnMode') columnMode: number = 0;
   @StorageLink('weibo.top_rect_height') topRectHeight: number = 0;
   @State signingOut: boolean = false;
@@ -213,7 +215,7 @@ export struct WeiboSettings {
   }
 
   @Builder
-  private SectionTitle(title: string, note: string): void {
+  private SectionTitle(title: ResourceStr, note: ResourceStr): void {
     Column({ space: 3 }) {
       Text(title)
         .fontSize(fs(17, this.fontScale))
@@ -225,6 +227,32 @@ export struct WeiboSettings {
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private HideUnsupportedRow(): void {
+    Row({ space: Spacing.md }) {
+      Column({ space: 3 }) {
+        Text($r('app.string.weibo_hide_unsupported_label'))
+          .fontSize(fs(16, this.fontScale))
+          .fontColor(Theme.textPrimary(this.isDark))
+        Text($r('app.string.weibo_hide_unsupported_label_note'))
+          .fontSize(fs(12, this.fontScale))
+          .fontColor(Theme.textSecondary(this.isDark))
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: this.hideUnsupported })
+        .selectedColor(Theme.brand())
+        .onChange((isOn: boolean): void => {
+          this.hideUnsupported = isOn;
+          AppSettingsStore.getInstance().setHideUnsupported(isOn);
+        })
+    }
+    .width('100%')
+    .padding(Spacing.lg)
+    .backgroundColor(Theme.bgCard(this.isDark))
+    .borderRadius(Radius.lg)
   }
 
   @Builder
@@ -356,6 +384,10 @@ export struct WeiboSettings {
           this.SectionTitle('应用语言', '已适配的界面会立即按所选语言显示')
           this.LanguageOption(APP_LANGUAGE_ZH_CN, '简体中文', '使用中文界面')
           this.LanguageOption(APP_LANGUAGE_EN, 'English', 'Use English resources where available')
+
+          this.SectionTitle($r('app.string.weibo_hide_unsupported_title'),
+            $r('app.string.weibo_hide_unsupported_note'))
+          this.HideUnsupportedRow()
         }
         .width('100%')
         .padding({ left: Spacing.lg, right: Spacing.lg, top: this.contentTopInset(), bottom: 100 })

@@ -2,7 +2,7 @@ import { relationalStore } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { WeiboPost } from '../model/WeiboModel';
 import { RequestQueue } from '../domain/RequestQueue';
-export interface CachedFeed { posts: WeiboPost[]; cursor: string | null; anchorId: string; offset: number; }
+export interface CachedFeed { posts: WeiboPost[]; cursor: string | null; anchorId: string; offset: number; needsRefresh?: boolean; }
 const MAX_POSTS: number = 500;
 const MAX_AGE: number = 7 * 24 * 60 * 60 * 1000;
 /** Account IDs are bound parameters. Every multi-table cache update is transactional. */
@@ -23,6 +23,8 @@ export class ReaderDatabase {
       await tx.execute('CREATE TABLE IF NOT EXISTS posts (account TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, fetched INTEGER NOT NULL, PRIMARY KEY(account,id))');
       await tx.execute('CREATE TABLE IF NOT EXISTS feed_order (account TEXT NOT NULL, feed TEXT NOT NULL, id TEXT NOT NULL, rank INTEGER NOT NULL, PRIMARY KEY(account,feed,id))');
       await tx.execute("CREATE TABLE IF NOT EXISTS feed_meta (account TEXT NOT NULL, feed TEXT NOT NULL, cursor TEXT, anchor TEXT NOT NULL DEFAULT '', offset REAL NOT NULL DEFAULT 0, PRIMARY KEY(account,feed))");
+      // Separate versioned boundary table: older caches have no proof of continuity.
+      await tx.execute('CREATE TABLE IF NOT EXISTS feed_boundary (account TEXT NOT NULL, feed TEXT NOT NULL, expected INTEGER NOT NULL, valid INTEGER NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(account,feed))');
       await tx.execute('CREATE TABLE IF NOT EXISTS local_data (account TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(account,kind,id))');
       await tx.commit();
     } catch (error) { await tx.rollback(); throw new Error((error as Error).message); }
@@ -35,7 +37,11 @@ export class ReaderDatabase {
     if (this.initialization === null) { throw new Error('阅读数据库尚未初始化'); }
     await this.initialization;
   }
-  async loadFeed(account: string, feed: string): Promise<CachedFeed> {
+  loadFeed(account: string, feed: string): Promise<CachedFeed> {
+    // Serialize the entire snapshot read with writes, including its metadata and boundary.
+    return this.writes.enqueue<CachedFeed>(() => this.readFeed(account, feed));
+  }
+  private async readFeed(account: string, feed: string): Promise<CachedFeed> {
     await this.ready();
     const result: CachedFeed = { posts: [], cursor: null, anchorId: '', offset: 0 };
     const rows: relationalStore.ResultSet = await this.store().querySql('SELECT p.body FROM feed_order f JOIN posts p ON p.account=f.account AND p.id=f.id WHERE f.account=? AND f.feed=? AND p.fetched>=? ORDER BY f.rank LIMIT 500', [account, feed, Date.now() - MAX_AGE]);
@@ -48,6 +54,17 @@ export class ReaderDatabase {
         result.anchorId = meta.getString(1); result.offset = meta.getDouble(2);
       }
     } finally { meta.close(); }
+    const boundary: relationalStore.ResultSet = await this.store().querySql('SELECT expected,valid,version FROM feed_boundary WHERE account=? AND feed=?', [account,feed]);
+    let verified: boolean = false;
+    try {
+      verified = boundary.goToNextRow() && boundary.getDouble(2) === 1 && boundary.getDouble(1) === 1
+        && boundary.getDouble(0) === result.posts.length;
+    } finally { boundary.close(); }
+    result.needsRefresh = !verified;
+    if (!verified) { result.cursor = null; }
+    if (!result.posts.some((post: WeiboPost): boolean => post.id === result.anchorId)) {
+      result.anchorId = ''; result.offset = 0;
+    }
     return result;
   }
   saveFeed(account: string, feed: string, posts: WeiboPost[], cursor: string | null, current: () => boolean): Promise<void> {
@@ -56,13 +73,19 @@ export class ReaderDatabase {
       if (!current()) { return; }
       const tx: relationalStore.Transaction = await this.store().createTransaction();
       try {
+        const ids: Set<string> = new Set();
+        const snapshot: WeiboPost[] = posts.filter((post: WeiboPost): boolean => {
+          if (post.id.length === 0 || ids.has(post.id)) { return false; }
+          ids.add(post.id); return true;
+        });
         await tx.execute('DELETE FROM feed_order WHERE account=? AND feed=?', [account,feed]);
-        for (let i: number = 0; i < Math.min(posts.length,MAX_POSTS); i++) {
-          const post: WeiboPost = posts[i];
+        for (let i: number = 0; i < Math.min(snapshot.length,MAX_POSTS); i++) {
+          const post: WeiboPost = snapshot[i];
           await tx.execute('INSERT OR REPLACE INTO posts(account,id,body,fetched) VALUES(?,?,?,?)', [account,post.id,JSON.stringify(post),post.fetchedAt ?? Date.now()]);
           await tx.execute('INSERT OR IGNORE INTO feed_order(account,feed,id,rank) VALUES(?,?,?,?)', [account,feed,post.id,i]);
         }
         await tx.execute('INSERT INTO feed_meta(account,feed,cursor) VALUES(?,?,?) ON CONFLICT(account,feed) DO UPDATE SET cursor=excluded.cursor', [account,feed,cursor]);
+        await tx.execute('INSERT OR REPLACE INTO feed_boundary(account,feed,expected,valid,version) VALUES(?,?,?,?,1)', [account,feed,Math.min(snapshot.length,MAX_POSTS),snapshot.length <= MAX_POSTS ? 1 : 0]);
         await tx.execute('DELETE FROM posts WHERE account=? AND (fetched<? OR id NOT IN (SELECT id FROM posts WHERE account=? ORDER BY fetched DESC LIMIT 500))', [account,Date.now()-MAX_AGE,account]);
         await tx.execute('DELETE FROM feed_order WHERE account=? AND id NOT IN (SELECT id FROM posts WHERE account=?)', [account,account]);
         if (!current()) { await tx.rollback(); return; }
@@ -83,7 +106,7 @@ export class ReaderDatabase {
       await this.ready();
       const tx: relationalStore.Transaction = await this.store().createTransaction();
       try {
-        for (const table of ['posts','feed_order','feed_meta','local_data']) {
+        for (const table of ['posts','feed_order','feed_meta','feed_boundary','local_data']) {
           await tx.execute('DELETE FROM ' + table + ' WHERE account=?', [account]);
         }
         await tx.commit();

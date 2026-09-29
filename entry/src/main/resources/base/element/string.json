@@ -37,8 +37,12 @@
       "value": "正在读取微博动态…"
     },
     {
-      "name": "weibo_empty",
-      "value": "填写用户 ID 后即可加载其公开动态"
+      "name": "weibo_recommend_empty",
+      "value": "暂时没有推荐内容，下拉刷新试试"
+    },
+    {
+      "name": "weibo_profile_empty",
+      "value": "这个账号还没有发布微博"
     },
     {
       "name": "weibo_cookie_label",
@@ -209,10 +213,6 @@
       "value": "前往首页管理浏览设置"
     },
     {
-      "name": "weibo_timeline_title",
-      "value": "微博动态"
-    },
-    {
       "name": "weibo_recommend_title",
       "value": "推荐"
     },
@@ -245,16 +245,28 @@
       "value": "重新登录微博"
     },
     {
-      "name": "weibo_timeline_hint",
-      "value": "输入用户 ID 后读取公开动态"
-    },
-    {
       "name": "weibo_timeline_load_more",
       "value": "加载更多"
     },
     {
       "name": "weibo_timeline_no_more",
       "value": "没有更多了"
+    },
+    {
+      "name": "weibo_hide_unsupported_title",
+      "value": "未支持的功能"
+    },
+    {
+      "name": "weibo_hide_unsupported_note",
+      "value": "消息、我的收藏与我的点赞在当前版本尚未实现，默认不显示"
+    },
+    {
+      "name": "weibo_hide_unsupported_label",
+      "value": "隐藏未支持的功能"
+    },
+    {
+      "name": "weibo_hide_unsupported_label_note",
+      "value": "关闭后底部导航会恢复「消息」页签，「我的」里会恢复「我的收藏」与「我的点赞」"
     },
     {
       "name": "weibo_readonly_action",
@@ -427,6 +439,22 @@
     {
       "name": "weibo_software_about_support_description",
       "value": "开发与维护需要持续投入时间和精力。若应用对你有帮助，欢迎自愿赞助；无论是否赞助，都感谢你的使用。"
+    },
+    {
+      "name": "weibo_recommend_updated",
+      "value": "推荐 ·"
+    },
+    {
+      "name": "weibo_recommend_updated_accessibility",
+      "value": "推荐，有更新，再次点击查看"
+    },
+    {
+      "name": "weibo_following_updated",
+      "value": "关注 ·"
+    },
+    {
+      "name": "weibo_following_updated_accessibility",
+      "value": "关注，有更新，再次点击查看"
     }
   ]
 }

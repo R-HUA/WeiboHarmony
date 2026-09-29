@@ -1,3 +1,4 @@
+import { ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
 import { PostEntities } from '../store/PostEntities';
 import { WeiboPost, WeiboUser } from '../model/WeiboModel';
 import { WeiboService } from '../service/WeiboService';
@@ -6,6 +7,9 @@ import { ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode } from '../common/T
 import { DividerShowType, HdsNavDestination, HdsNavDestinationTitleMode, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 import { WeiboPostDetailRouteParam } from './WeiboPostDetail';
 import { syncWeiboSplitNavigation } from '../common/WeiboNavigationLayout';
+import { buildWeiboThreadItem } from '../common/WeiboCardItems';
+import { requestTopicSearch } from '../common/TopicRequest';
+import { openExternalUrl } from '../common/ExternalLink';
 
 /** Explicit route input so profile navigation never depends on a card's transient state. */
 export interface WeiboUserProfileRouteParam {
@@ -78,30 +82,31 @@ export struct WeiboUserProfile {
     }
   }
 
+/** 卡片映射统一走 common/WeiboCardItems：正文富文本、转发引述块、发帖设备
+ *  这三处口径必须与首页/搜索页完全一致。 */
   private toThreadCard(post: WeiboPost): ThreadItemData {
-    const firstImage: string = post.pictures.length > 0 ? post.pictures[0] : '';
-    return {
-      tid: post.id,
-      postId: post.id,
-      forumId: '',
-      title: post.text.length > 0 ? post.text : post.userName,
-      forumName: post.source.length > 0 ? post.source : '微博',
-      forumAvatar: '',
-      author: post.userName,
-      authorId: post.userId,
-      authorAvatar: post.userAvatar,
-      replyNum: post.commentCount,
-      likeCount: post.likeCount,
-      isLiked: post.isLiked,
-      abstract: post.repost === null ? '' : post.repost.text,
-      firstImage: firstImage,
-      images: post.pictures,
-      videoUrl: post.videoUrl,
-      videoCoverUrl: post.videoCoverUrl,
-      createTime: post.createdAt,
-      isTop: false,
-      isGood: false,
-    };
+    return buildWeiboThreadItem(post);
+  }
+
+  /** 正文里的 @用户名：本页就在导航栈里，直接再压一层用户主页即可。 */
+  private openMention(uid: string, name: string): void {
+    const userId: string = typeof uid === 'string' ? uid.trim() : '';
+    if (userId.length === 0) {
+      return;
+    }
+    const param: WeiboUserProfileRouteParam = { userId: userId, userName: name.trim() };
+    this.weiboNavStack.pushPath({ name: 'WeiboUserProfile', param: param });
+    syncWeiboSplitNavigation(this.weiboNavStack);
+  }
+
+  /** #话题#：借 AppStorage 信号请宿主导航页清栈切到搜索页。 */
+  private openTopic(topic: string): void {
+    requestTopicSearch(topic);
+  }
+
+  /** 正文里的网页链接：交给系统浏览器（见 common/ExternalLink）。 */
+  private openLink(url: string): void {
+    openExternalUrl(this.getUIContext(), url);
   }
 
   private openPost(post: WeiboPost): void {
@@ -257,9 +262,13 @@ export struct WeiboUserProfile {
                 onTap: (_id: string): void => { this.openPost(post); },
                 onComment: (_id: string): void => { this.openPost(post); },
                 onAvatarTap: (_id: string, _name: string): void => { this.openPost(post); },
-                onImageTap: (_urls: string[], index: number): void => {
-                  // 预览使用高清档；卡片展示用的是 wap720 中图
-                  this.openImagePreview(post.previewPictures ?? post.pictures, index);
+                // 正文里的 @用户名/#话题#/网页链接：各自走自己的跳转，不落到整卡详情
+                onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
+                onTopicTap: (topic: string): void => { this.openTopic(topic); },
+                onLinkTap: (url: string): void => { this.openLink(url); },
+                onImageTap: (urls: string[], index: number): void => {
+                  // 以卡片传入的列表为准（正文高清档 / 转发原文自己的图）
+                  this.openImagePreview(urls.length > 0 ? urls : (post.previewPictures ?? post.pictures), index);
                 },
                 skipImageCache: true
               })
@@ -313,6 +322,7 @@ export struct WeiboUserProfile {
     HdsNavDestination() {
       this.ProfileContent()
     }
+    .onHidden((): void => { AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, ''); })
     .titleMode(HdsNavDestinationTitleMode.MINI)
     .hideBackButton(true)
     .onBackPressed((): boolean => {

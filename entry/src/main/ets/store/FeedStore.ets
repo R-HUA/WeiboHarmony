@@ -24,10 +24,19 @@ export class FeedStore {
   /** 缓存恢复出的阅读锚点：帖子 ID＋相对视口偏移，页面渲染后一次性消费。 */
   pendingAnchorId: string = '';
   pendingAnchorOffset: number = 0;
+  onContentChanged: () => void = (): void => {};
+  onPendingChanged: (pending: boolean) => void = (): void => {};
+  onStreamReplaced: () => void = (): void => {};
+  hasPendingUpdate: boolean = false;
+  needsRefresh: boolean = false;
+  private pendingPage: FeedPage | null = null;
+  private pendingSession: number = -1;
   private readonly kind: FeedKind;
   private source: FeedSource;
   private revision: number = 0;
+  private adoptRevision: number = -1;
   private cursor: string | null = null;
+  private visitedCursors: Set<string> = new Set();
 
   constructor(kind: FeedKind, source?: FeedSource) {
     this.kind = kind;
@@ -37,6 +46,8 @@ export class FeedStore {
   /** 账户切换时丢弃旧内容；置 Loading 避免空态在重建前闪现。 */
   reset(): void {
     this.revision++;
+    this.visitedCursors.clear();
+    this.clearPending(); this.needsRefresh = false;
     this.posts = [];
     this.errorMessage = '';
     this.cursor = null;
@@ -50,6 +61,7 @@ export class FeedStore {
 
   cancel(): void {
     this.revision++;
+    this.clearPending();
     this.loadingMore = false;
     this.refreshing = false;
   }
@@ -81,6 +93,7 @@ export class FeedStore {
    */
   async loadFirst(explicit: boolean): Promise<void> {
     const revision: number = ++this.revision;
+    this.clearPending();
     const session: number = this.source.generation();
     this.loadingMore = false;
     this.refreshing = true;
@@ -95,27 +108,27 @@ export class FeedStore {
     if (!this.current(revision, session)) { return; }
     if (cached !== null && cached.posts.length > 0 && this.posts.length === 0) {
       this.posts = this.unique(cached.posts);
-      this.cursor = cached.cursor;
-      this.hasMore = cached.cursor !== null;
-      this.pendingAnchorId = cached.anchorId;
-      this.pendingAnchorOffset = cached.offset;
+      this.needsRefresh = cached.needsRefresh === true;
+      this.cursor = this.needsRefresh ? null : cached.cursor;
+      this.hasMore = this.cursor !== null;
+      this.pendingAnchorId = explicit ? '' : cached.anchorId;
+      this.pendingAnchorOffset = explicit ? 0 : cached.offset;
       this.state = FeedLoadState.Success;
+      this.onContentChanged();
     } else if (this.posts.length === 0) {
       this.state = FeedLoadState.Loading;
     }
     try {
       const page: FeedPage = await this.source.fetchFirst(this.kind);
       if (!this.current(revision, session)) { return; }
-      // 刷新结果与「当前内容＋缓存」合并去重：保住本会话已见内容与深层已翻页缓存
-      let base: WeiboPost[] = this.posts;
-      if (cached !== null) { base = base.concat(cached.posts); }
-      const merged: WeiboPost[] = this.unique(page.items.concat(base));
-      this.posts = merged;
-      this.cursor = page.nextCursor;
-      this.hasMore = page.nextCursor !== null;
-      this.state = merged.length > 0 ? FeedLoadState.Success : FeedLoadState.Empty;
-      if (merged.length > 0) {
-        this.persist(merged, page.nextCursor, revision, session);
+      if (!explicit && this.adoptRevision !== revision && this.posts.length > 0) {
+        // A background result must not change the visible stream, its cursor or its anchor.
+        this.pendingPage = page;
+        this.pendingSession = session;
+        this.hasPendingUpdate = true;
+        this.onPendingChanged(true);
+      } else {
+        this.replaceStream(page, revision, session);
       }
     } catch (error) {
       if (!this.current(revision, session)) { return; }
@@ -128,24 +141,67 @@ export class FeedStore {
     }
   }
 
-  /** 追加下一页并去重；空结果或重复游标终止分页，失败保留当前内容供重试。 */
+  /** Entering a tab adopts its pending/in-flight first page, without duplicating the request. */
+  async enter(): Promise<void> {
+    if (this.hasPendingUpdate) { this.acceptPendingUpdate(); return; }
+    if (this.refreshing) { this.adoptRevision = this.revision; return; }
+    await this.loadFirst(true);
+  }
+
+  private clearPending(): void {
+    this.pendingPage = null; this.pendingSession = -1; this.hasPendingUpdate = false; this.onPendingChanged(false);
+  }
+
+  /** Explicit adoption starts a new contiguous stream; old pages cannot be appended to it. */
+  acceptPendingUpdate(): void {
+    if (this.pendingPage === null) { return; }
+    const page: FeedPage = this.pendingPage;
+    const session: number = this.pendingSession;
+    if (session !== this.source.generation()) { this.clearPending(); return; }
+    this.replaceStream(page, ++this.revision, session);
+  }
+
+  private replaceStream(page: FeedPage, revision: number, session: number): void {
+    this.clearPending();
+    this.visitedCursors.clear();
+    this.needsRefresh = false;
+    this.loadingMore = false; this.refreshing = false; this.errorMessage = '';
+    this.pendingAnchorId = ''; this.pendingAnchorOffset = 0;
+    this.posts = this.unique(page.items);
+    this.cursor = this.posts.length > 0 ? page.nextCursor : null;
+    this.hasMore = this.cursor !== null;
+    this.state = this.posts.length > 0 ? FeedLoadState.Success : FeedLoadState.Empty;
+    this.onStreamReplaced();
+    this.onContentChanged();
+    this.persist(this.posts, this.cursor, revision, session);
+    this.source.savePosition(this.kind, '', 0).catch((error: Error): void => {
+      hilog.warn(0x0000, TAG, 'reset position failed: %{public}s', error.message);
+    });
+  }
+
+  /** 追加下一页并去重；重复内容继续推进，空结果或循环游标终止，失败保留内容供重试。 */
   async loadMore(): Promise<void> {
-    if (this.refreshing || this.loadingMore || !this.hasMore || this.state !== FeedLoadState.Success || this.cursor === null) { return; }
+    if (this.needsRefresh || this.refreshing || this.loadingMore || !this.hasMore || this.state !== FeedLoadState.Success || this.cursor === null) { return; }
     const revision: number = this.revision;
     const session: number = this.source.generation();
-    const cursor: string = this.cursor;
     this.loadingMore = true;
     this.errorMessage = '';
     try {
-      const page: FeedPage = await this.source.fetchMore(this.kind, cursor);
-      if (!this.current(revision, session)) { return; }
-      const merged: WeiboPost[] = this.unique(this.posts.concat(page.items));
-      const grew: boolean = merged.length > this.posts.length;
-      this.hasMore = page.nextCursor !== null && grew && page.nextCursor !== cursor;
-      this.cursor = page.nextCursor;
-      if (grew) {
+      // Duplicate-only pages within this stream still advance its cursor.
+      // Bound each foreground batch to avoid draining an unbounded sequence of duplicates.
+      for (let attempt: number = 0; attempt < 3; attempt++) {
+        const cursor: string | null = this.cursor;
+        if (cursor === null) { break; }
+        const page: FeedPage = await this.source.fetchMore(this.kind, cursor);
+        if (!this.current(revision, session)) { return; }
+        this.visitedCursors.add(cursor);
+        const merged: WeiboPost[] = this.unique(this.posts.concat(page.items));
+        const grew: boolean = merged.length > this.posts.length;
+        this.hasMore = page.items.length > 0 && page.nextCursor !== null && !this.visitedCursors.has(page.nextCursor);
+        this.cursor = this.hasMore ? page.nextCursor : null;
         this.posts = merged;
-        this.persist(merged, page.nextCursor, revision, session);
+        this.persist(merged, this.cursor, revision, session);
+        if (grew || !this.hasMore) { break; }
       }
     } catch (error) {
       if (!this.current(revision, session)) { return; }

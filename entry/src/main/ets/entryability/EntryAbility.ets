@@ -23,7 +23,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { Theme, setDarkMode as applyThemeDarkMode, initDarkMode, syncDarkFromConfig, isWideBarDevice, isLargeFoldDevice, isWideBarFlatDevice } from '../common/Theme';
 import { UsageHabitsManager } from '../service/UsageHabitsManager';
 import { CacheManager, STORE_NAME } from '../cache/CacheManager';
-import { CACHE_KEY } from '../common/Constants';
+import { CACHE_KEY, ACTIVE_FEED_VIDEO_KEY } from '../common/Constants';
 import { AppSettingsStore } from '../service/AppSettingsStore';
 import { WEIBO_BREAKPOINT_KEY, WeiboResponsiveLayout } from '../common/WeiboNavigationLayout';
 import { ReaderDatabase } from '../storage/ReaderDatabase';
@@ -337,7 +337,26 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
+  /**
+   * 退到后台：主动归还信息流播放器。
+   *
+   * 真机实测（2026-09-28）：系统资源调度服务 `resource_schedule_service` 会在应用刚转后台
+   * 的瞬间统计该进程的**硬件解码器**占用，超阈值即以 `HARDWARE_DECODING_RESOURCES_LIMIT`
+   * 直接 SIGKILL（signal 9，`onDestroy`/`onWindowStageDestroy` 都不走）。用户看到的就是
+   * 「切出再切回像重启一样整个重载」——其实进程已被杀，回来必然是 onCreate 冷启动重放。
+   *
+   * 列表侧已改为「点击才创建 Video、全局同时只留一个」，这里再兜一层：转后台时清空激活项，
+   * 让卡片销毁自己的 Video 并释放硬解器（顺带满足「切后台即停播」的预期）。
+   */
   onBackground(): void {
     hilog.info(0x0000, TAG, 'Ability onBackground');
+    try {
+      if ((AppStorage.get<string>(ACTIVE_FEED_VIDEO_KEY) ?? '').length > 0) {
+        AppStorage.setOrCreate<string>(ACTIVE_FEED_VIDEO_KEY, '');
+        hilog.info(0x0000, TAG, 'Released active feed video on background');
+      }
+    } catch (error) {
+      hilog.warn(0x0000, TAG, 'Release feed video failed: %{public}s', JSON.stringify(error));
+    }
   }
 }
