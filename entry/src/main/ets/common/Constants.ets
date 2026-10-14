@@ -1,5 +1,5 @@
 /*
- * TiebaPura - HarmonyOS 原生 ArkTS 实现的第三方百度贴吧客户端
+ * WeiboPura - HarmonyOS 原生 ArkTS 实现的第三方微博客户端
  * Copyright (C) 2026 a307608689-afk
  *
  * This program is free software: you can redistribute it and/or modify
@@ -223,12 +223,12 @@ export const CACHE_TTL: CacheTtls = {
   FOLLOW_USERS: 10 * 60 * 1000,      // 10 分钟：关注列表变化不频繁，过期可 stale 复用
 };
 
-// 隐私政策（首启同意弹窗 + 应用市场「隐私政策网址」共用同一份在线政策）
-/** 隐私政策版本号：政策内容实质变更时同步递增，已同意旧版本的用户会重新收到同意弹窗 */
+// 在线政策地址与发布文档保持一致。
+/** 政策版本标识；当前微博入口单独保存同意状态，不使用此值触发再次同意。 */
 export const PRIVACY_POLICY_VERSION: string = '1.0.0';
 /** 隐私政策在线地址（GitHub 渲染页；与仓库 docs/PRIVACY.md 同源） */
 export const PRIVACY_POLICY_URL: string =
-  'https://github.com/a307608689-afk/TiebaPura/blob/main/docs/PRIVACY.md';
+  'https://github.com/R-HUA/WeiboHarmony/blob/main/docs/PRIVACY.md';
 
 // 主题色（贴吧蓝）
 export const BRAND_BLUE: string = '#E6162D';
