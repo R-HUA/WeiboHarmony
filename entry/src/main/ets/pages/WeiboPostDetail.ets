@@ -279,8 +279,9 @@ export struct WeiboPostDetail {
   }
 
   /** 网页链接：交系统浏览器（见 common/ExternalLink）。 */
-  private openLink(url: string): void {
-    openWeiboLink(this.getUIContext(), this.weiboNavStack, url);
+  /** `label` = 锚点展示文字：导航层用它补判「查看图片」这类没有图床地址的文字链接。 */
+  private openLink(url: string, label: string = ''): void {
+    openWeiboLink(this.getUIContext(), this.weiboNavStack, url, label);
   }
 
   private async loadComments(append: boolean = false): Promise<void> {
@@ -504,7 +505,7 @@ export struct WeiboPostDetail {
           fontScale: this.fontScale,
           onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
           onTopicTap: (topic: string): void => { this.openTopic(topic); },
-          onLinkTap: (url: string): void => { this.openLink(url); }
+          onLinkTap: (url: string, label: string): void => { this.openLink(url, label); }
         })
           .width('100%')
         if (this.post.pictures.length > 0) {
@@ -702,7 +703,7 @@ export struct WeiboPostDetail {
         fontScale: this.fontScale,
         onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
         onTopicTap: (topic: string): void => { this.openTopic(topic); },
-        onLinkTap: (url: string): void => { this.openLink(url); }
+        onLinkTap: (url: string, label: string): void => { this.openLink(url, label); }
       })
         .width('100%')
       if (repost.isLongText === true && this.repostLongTextRaw.length === 0) {
@@ -768,7 +769,7 @@ export struct WeiboPostDetail {
         fontScale: this.fontScale,
         onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
         onTopicTap: (topic: string): void => { this.openTopic(topic); },
-        onLinkTap: (url: string): void => { this.openLink(url); }
+        onLinkTap: (url: string, label: string): void => { this.openLink(url, label); }
       })
         .width('100%')
       if (currentPost.isLongText === true && this.longTextRaw.length === 0) {
@@ -875,7 +876,7 @@ export struct WeiboPostDetail {
                 fontScale: this.fontScale,
                 onMentionTap: (uid: string, name: string): void => { this.openMention(uid, name); },
                 onTopicTap: (topic: string): void => { this.openTopic(topic); },
-                onLinkTap: (url: string): void => { this.openLink(url); }
+                onLinkTap: (url: string, label: string): void => { this.openLink(url, label); }
               })
                 .width('100%')
               Text(comment.createdAt)

@@ -422,8 +422,9 @@ export struct WeiboHomeTab {
   }
 
   /** 正文里的网页链接：交给系统浏览器（见 common/ExternalLink）。 */
-  private openLink(url: string): void {
-    openWeiboLink(this.getUIContext(), this.weiboNavStack, url);
+  /** `label` = 锚点展示文字：导航层用它补判「查看图片」这类没有图床地址的文字链接。 */
+  private openLink(url: string, label: string = ''): void {
+    openWeiboLink(this.getUIContext(), this.weiboNavStack, url, label);
   }
 
   private openImagePreview(urls: string[], index: number): void {
@@ -507,7 +508,7 @@ export struct WeiboHomeTab {
       // 正文/转发里的 @用户名、#话题#、网页链接：各自走自己的跳转，不落到整卡详情
       onMentionTap: (uid: string, name: string): void => { this.openUserProfile(uid, name); },
       onTopicTap: (topic: string): void => { this.openTopic(topic); },
-      onLinkTap: (url: string): void => { this.openLink(url); },
+      onLinkTap: (url: string, label: string): void => { this.openLink(url, label); },
       onImageTap: (urls: string[], index: number): void => {
         // 以卡片传入的列表为准：正文走高清档，转发原文走转发自己的图，
         // 卡片已在 ThreadItemData.previewImages / repostPreviewImages 里分好。

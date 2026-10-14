@@ -56,3 +56,5 @@ desktop.ini
 /test-review.log
 /build-review-direct.log
 /video-api-review.txt
+
+/.workbuddy/

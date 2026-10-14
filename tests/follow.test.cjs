@@ -54,3 +54,37 @@ test('unlike uses destroyLike and stale completion cannot remove the new account
  await assert.rejects(f.service.setLike('42',false),/正在处理/);
  f.requests[1].resolve('{"ok":1}');await current;
 });
+
+async function waitFor(condition,label){for(let i=0;i<200;i++){if(condition())return;await new Promise(r=>setTimeout(r,1));}throw new Error('timeout: '+label);}
+test('an HTTP 403 write is retried once with the refreshed CSRF cookie',async()=>{
+ const f=fixture();await f.service.fetchUserProfile('42');
+ const follow=f.service.setFollowing('42',true);
+ f.requests[0].reject(Object.assign(new Error('微博拒绝了本次访问，请更新 Cookie 或稍后重试'),{code:403}));
+ await waitFor(()=>f.requests.length===2,'retry');
+ assert.match(f.requests[1].url,/friendships\/create$/);
+ assert.equal(f.requests[1].cookie,'desktop');
+ f.requests[1].resolve('{"ok":1}');
+ await follow;
+ assert.equal(f.service.getFollowing('42'),true);
+});
+test('non-403 rejections and business errors are never retried',async()=>{
+ const plain=fixture();await plain.service.fetchUserProfile('42');
+ const damaged=plain.service.setFollowing('42',true);
+ plain.requests[0].reject(new Error('关注操作失败'));
+ await assert.rejects(damaged,/关注操作失败/);
+ assert.equal(plain.requests.length,1);
+ const business=fixture();await business.service.fetchUserProfile('42');
+ const captcha=business.service.setFollowing('42',true);
+ business.requests[0].resolve('{"ok":0,"msg":"需要验证码"}');
+ await assert.rejects(captcha,/验证码/);
+ assert.equal(business.requests.length,1);
+});
+test('an endless 403 stops at two attempts',async()=>{
+ const f=fixture();await f.service.fetchUserProfile('42');
+ const follow=f.service.setFollowing('42',true);
+ f.requests[0].reject(Object.assign(new Error('微博拒绝了本次访问'),{code:403}));
+ await waitFor(()=>f.requests.length===2,'retry');
+ f.requests[1].reject(Object.assign(new Error('微博拒绝了本次访问'),{code:403}));
+ await assert.rejects(follow,/拒绝了/);
+ assert.equal(f.requests.length,2);
+});

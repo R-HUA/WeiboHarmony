@@ -26,7 +26,8 @@ export struct RichTextView {
   @Prop fontScale: number = 1.0;
   onMentionTap: (uid: string, name: string) => void = () => {};
   onTopicTap: (topic: string) => void = () => {};
-  onLinkTap: (url: string) => void = () => {};
+  /** 第二个参数是锚点文字：导航层用它补判「查看图片」这类没有图床地址的文字链接。 */
+  onLinkTap: (url: string, label: string) => void = () => {};
   /** 长文末尾的「展开」；参数是要展开哪条帖的 postId（转发原文会传原帖 id）。 */
   onExpandTap: (target: string) => void = () => {};
 
@@ -41,7 +42,7 @@ export struct RichTextView {
   private dispatch(segment: RichSegment): void {
     if (segment.kind === RichKind.Mention) {
       if (segment.target.length > 0) { this.onMentionTap(segment.target, this.mentionName(segment)); }
-      else { this.onLinkTap('https://weibo.com/n/' + encodeURIComponent(this.mentionName(segment))); }
+      else { this.onLinkTap('https://weibo.com/n/' + encodeURIComponent(this.mentionName(segment)), segment.text); }
       return;
     }
     if (segment.kind === RichKind.Topic) {
@@ -53,7 +54,7 @@ export struct RichTextView {
       return;
     }
     if (segment.kind === RichKind.Link) {
-      this.onLinkTap(segment.target);
+      this.onLinkTap(segment.target, segment.text);
     }
   }
 

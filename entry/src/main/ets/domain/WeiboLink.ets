@@ -1,5 +1,27 @@
 /** Pure link classification. IDs stay strings; video object IDs are never post IDs. */
 export interface WeiboLinkTarget { kind: string; id: string; url: string; }
+/**
+ * 微博图床域名（含各尺寸别名的子域）。
+ *
+ * 正文里「查看图片」这类文字链接的 href 常常就是图床直链（`https://wx3.sinaimg.cn/large/xxx.jpg`）。
+ * 这种地址浏览器直开会被防盗链挡成 403，只有在 App 内看图才正常，因此单独归为 `image`，
+ * 交给页面在原图浏览器里打开，而不是丢给系统浏览器。
+ */
+const IMAGE_HOSTS: string[] = ['sinaimg.cn', 'sinaimg.com', 'weibocdn.com', 'sinacdn.cn'];
+/** 图床的尺寸别名目录：没有扩展名时靠它确认这是一张图（如 /large/、/mw690/、/orj360/）。 */
+const IMAGE_PATH_ALIAS: RegExp = /^\/(?:large|mw\d+|thumb\d+|thumbnail|small|bmiddle|original|orj\d+|woriginal)\//i;
+const IMAGE_EXTENSION: RegExp = /\.(?:jpg|jpeg|jfif|png|gif|webp|bmp|heic|avif)$/i;
+/**
+ * 「查看图片」这类锚点文字。
+ *
+ * 并非每个接口版本都把图床地址写进 href：有的只给一个指向微博页面的「查看图片」文字链接，
+ * 只按地址判断会漏掉这种帖子。文字是第二条可用信号——命中即按「用户想看图」处理，
+ * 由解析器打开落地页取配图（见 imageFromWeiboPage）。
+ */
+const IMAGE_VIEW_TEXTS: string[] = [
+  '查看图片', '查看原图', '查看大图', '点击查看图片', '查看图集', '查看图片详情', '查看大图及更多'
+];
+
 export function decodeLinkPart(value: string): string {
   try { return decodeURIComponent(value.replace(/\+/g, ' ')); } catch (_) { return value; }
 }
@@ -7,6 +29,47 @@ export function linkQuery(url: string, key: string): string {
   const match: RegExpExecArray | null = new RegExp('[?&]' + key + '=([^&#]*)').exec(url);
   return match === null ? '' : decodeLinkPart(match[1]);
 }
+/** 只认白名单图床：外站地址即使以 .jpg 结尾也不在 App 内打开，仍然交系统浏览器。 */
+function isWeiboImage(host: string, path: string): boolean {
+  let onImageHost: boolean = false;
+  for (let index: number = 0; index < IMAGE_HOSTS.length; index++) {
+    const domain: string = IMAGE_HOSTS[index];
+    if (host === domain || host.endsWith('.' + domain)) { onImageHost = true; break; }
+  }
+  if (!onImageHost) { return false; }
+  return IMAGE_EXTENSION.test(path) || IMAGE_PATH_ALIAS.test(path);
+}
+
+/** 锚点文字是否在说「看图」。允许「共9张图 查看图片」这类前后缀。 */
+export function isImageViewText(text: string): boolean {
+  const clean: string = text.replace(/[\s「」『』【】《》<>＞>]+/g, '');
+  if (clean.length === 0) { return false; }
+  for (let index: number = 0; index < IMAGE_VIEW_TEXTS.length; index++) {
+    if (clean.includes(IMAGE_VIEW_TEXTS[index])) { return true; }
+  }
+  return false;
+}
+
+/**
+ * 从微博落地页取配图地址（`og:image` 是标准出口，`$CONFIG['page_pic']` 兜底老页面）。
+ * 只接受图床地址：页面给的头像/logo 之类不会被当成用户要看的那张图。
+ */
+export function imageFromWeiboPage(html: string): string {
+  let picture: string = '';
+  const tag: RegExpExecArray | null = /<meta\b[^>]*property=["']og:image["'][^>]*>/i.exec(html);
+  if (tag !== null) {
+    const content: RegExpExecArray | null = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag[0]);
+    picture = content === null ? '' : content[1].trim();
+  }
+  if (picture.length === 0) {
+    const config: RegExpExecArray | null = /\$CONFIG\[['"]page_pic['"]\]\s*=\s*['"]([^'"]+)['"]/.exec(html);
+    picture = config === null ? '' : config[1].trim();
+  }
+  if (picture.length === 0) { return ''; }
+  const target: WeiboLinkTarget = parseWeiboLink(picture);
+  return target.kind === 'image' ? target.url : '';
+}
+
 export function parseWeiboLink(input: string): WeiboLinkTarget {
   let url: string = input.trim().replace(/&amp;/g, '&');
   if (url.startsWith('//')) { url = 'https:' + url; }
@@ -15,6 +78,8 @@ export function parseWeiboLink(input: string): WeiboLinkTarget {
   if (match === null) { return { kind: 'unsupported', id: '', url: url }; }
   const host: string = match[1].toLowerCase();
   const path: string = match[2].replace(/\/$/, '');
+  // 图床直链先于站点白名单判定：它不在信任站点里，但必须在 App 内预览而非跳浏览器。
+  if (isWeiboImage(host, path)) { return { kind: 'image', id: '', url: url.replace(/^http:/i, 'https:') }; }
   const trusted: boolean = ['weibo.com', 'www.weibo.com', 'm.weibo.cn', 'weibo.cn', 'www.weibo.cn', 'video.weibo.com', 's.weibo.com', 't.cn'].includes(host);
   if (!trusted) { return { kind: 'external', id: '', url: url }; }
   url = url.replace(/^http:/i, 'https:');

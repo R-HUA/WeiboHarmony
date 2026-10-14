@@ -1158,7 +1158,9 @@ struct Index {
         pageScroller: this.discoverScroller,
         topInset: this.contentTopInset(),
         animationTrigger: this.page2Enter,
-        exitTrigger: this.page2Exit
+        exitTrigger: this.page2Exit,
+        // 热搜词条点击：与 #话题# 同一条路径，切到搜索页直接搜掉这个关键词
+        onOpenTopic: (keyword: string): void => this.openTopicSearch(keyword)
       })
     }
     .tabBar(this.hdsTabBar(this.symbolFor(WeiboTab.Discover), $r('app.string.weibo_tab_discover')))

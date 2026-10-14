@@ -4,7 +4,7 @@ import { PostEntities } from '../store/PostEntities';
 import { ResponseCache } from '../domain/ResponseCache';
 import { formatWeiboTime, stripHtml } from '../common/Constants';
 import { rcp } from '@kit.RemoteCommunicationKit';
-import { WeiboHttpClient } from '../network/WeiboHttpClient';
+import { WeiboHttpClient, WeiboRequestError } from '../network/WeiboHttpClient';
 import { WeiboComment, WeiboCommentsPage, WeiboHotTopic, WeiboPost, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from './WeiboAuthManager';
 import { WeiboVisitorSession } from './WeiboVisitorSession';
@@ -80,11 +80,37 @@ export class WeiboService {
 
   getFollowing(userId: string): boolean | undefined { return this.following.get(userId); }
 
+  /**
+   * 用户主动发起的写请求（关注/取关/点赞/评论），必要时补一次重试。
+   *
+   * 微博的 CSRF 令牌（XSRF-TOKEN）随响应轮换，写接口用「Cookie 值 == 请求头 X-XSRF-TOKEN」
+   * 双提交校验：拿着过期令牌就是 403。而这一次 403 的响应本身通常已换发新令牌
+   * （WeiboAuthManager 收到响应就并进 Cookie），因此用最新 Cookie 原样重发一次即可，
+   * 不必让用户看到「微博拒绝了」。
+   *
+   * 只有 HTTP 层的 403 才重试：其它状态码和业务错误（`ok:0`，如需要验证码、次数超限）
+   * 都已经带了明确原因，重复发送没有意义，也可能加重风控。
+   */
+  private async postAuthenticatedWrite(endpoint: string, useDesktopCookie: boolean,
+    form: rcp.Form): Promise<void> {
+    try {
+      this.parseResponse(await this.sendWrite(endpoint, useDesktopCookie, form));
+      return;
+    } catch (error) {
+      if ((error as WeiboRequestError).code !== 403) { throw error as Error; }
+    }
+    this.parseResponse(await this.sendWrite(endpoint, useDesktopCookie, form));
+  }
+
+  private sendWrite(endpoint: string, useDesktopCookie: boolean, form: rcp.Form): Promise<string> {
+    return WeiboHttpClient.postForm(endpoint, this.requireAccountCookie(useDesktopCookie), form);
+  }
+
   /** Only called by the profile's explicit follow/unfollow action. */
   async setFollowing(userId: string, following: boolean): Promise<void> {
     const id: string = userId.trim();
     const auth: WeiboAuthManager = WeiboAuthManager.getInstance();
-    const cookie: string = this.requireAccountCookie(true);
+    this.requireAccountCookie(true);
     if (!/^[1-9][0-9]*$/.test(id) || id === auth.getAccountId()) { throw new Error('无法关注该用户'); }
     if (this.pendingFollows.has(id)) { throw new Error('关注操作正在处理中'); }
     const generation: number = auth.getGeneration();
@@ -95,8 +121,7 @@ export class WeiboService {
     this.pendingFollows.add(id);
     this.relationshipRevision++;
     try {
-      const raw: string = await WeiboHttpClient.postForm(endpoint, cookie, form);
-      this.parseResponse(raw);
+      await this.postAuthenticatedWrite(endpoint, true, form);
       if (generation !== auth.getGeneration()) { throw new Error('请求已取消'); }
       this.following.set(id, following);
     } catch (error) {
@@ -301,7 +326,7 @@ export class WeiboService {
   /** Like or cancel a like. This is never called automatically. */
   async setLike(postId: string, like: boolean): Promise<void> {
     const id: string = postId.trim();
-    const cookie: string = this.requireAccountCookie(true);
+    this.requireAccountCookie(true);
     if (id.length === 0) {
       throw new Error('微博信息不完整，无法点赞');
     }
@@ -314,8 +339,7 @@ export class WeiboService {
     const generation: number = WeiboAuthManager.getInstance().getGeneration();
     this.pendingLikes.add(id);
     try {
-      const raw: string = await WeiboHttpClient.postForm(endpoint, cookie, form);
-      this.parseResponse(raw);
+      await this.postAuthenticatedWrite(endpoint, true, form);
       if (generation !== WeiboAuthManager.getInstance().getGeneration()) { throw new Error('请求已取消'); }
       PostEntities.shared().confirmLike(id, like);
     } finally {
@@ -327,7 +351,7 @@ export class WeiboService {
   async publishComment(postId: string, content: string): Promise<void> {
     const id: string = postId.trim();
     const cleanContent: string = content.trim();
-    const cookie: string = this.requireAccountCookie();
+    this.requireAccountCookie();
     if (id.length === 0 || cleanContent.length === 0) {
       throw new Error('评论内容不能为空');
     }
@@ -336,8 +360,7 @@ export class WeiboService {
     // A timed-out write may have reached the server too. Never reuse its old comments.
     this.commentCache.invalidate(id);
     try {
-      const raw: string = await WeiboHttpClient.postForm('https://m.weibo.cn/api/comments/create', cookie, form);
-      this.parseResponse(raw);
+      await this.postAuthenticatedWrite('https://m.weibo.cn/api/comments/create', false, form);
     } finally { this.commentCache.invalidate(id); }
   }
 

@@ -7,15 +7,23 @@ const WEIBO_REFERER: string = 'https://m.weibo.cn/';
 const WEIBO_USER_AGENT: string =
   'Mozilla/5.0 (Linux; HarmonyOS) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36';
 const WEIBO_DESKTOP_REFERER: string = 'https://weibo.com/';
+/** Referer 是不带尾斜杠的形式；Origin 按规范只有 scheme + host。 */
+const WEIBO_REFERER_ORIGIN: string = 'https://m.weibo.cn';
+const WEIBO_DESKTOP_ORIGIN: string = 'https://weibo.com';
 const WEIBO_DESKTOP_USER_AGENT: string =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36';
 const MIN_REQUEST_INTERVAL_MS: number = 800;
 const MOBILE_PRECONNECT_COOLDOWN_MS: number = 180000;
 
+/** 响应 Cookie 的接收方（认证层实现）。见 WeiboHttpClient.absorbResponseCookies。 */
+export type WeiboCookieSink = (origin: string, setCookie: string) => void;
+
 /** A small isolated client so Weibo requests never inherit Tieba cookies. */
 export class WeiboHttpClient {
   private static session: rcp.Session | null = null;
   private static queue: RequestQueue = new RequestQueue(MIN_REQUEST_INTERVAL_MS);
+  /** 响应 Cookie 接收方：由 WeiboAuthManager 在初始化时注册。 */
+  private static cookieSink: WeiboCookieSink | null = null;
   /** API 24+: keep the one mobile-origin handshake warm for the feed's first request. */
   private static mobilePreconnectTask: Promise<void> | null = null;
   private static lastMobilePreconnectAt: number = 0;
@@ -66,6 +74,10 @@ export class WeiboHttpClient {
     WeiboHttpClient.session?.cancel();
   }
 
+  static setCookieSink(sink: WeiboCookieSink | null): void {
+    WeiboHttpClient.cookieSink = sink;
+  }
+
   /**
    * Write requests are deliberately explicit: callers create the form only
    * after a direct user gesture, and must pass the user-provided Cookie.
@@ -77,11 +89,18 @@ export class WeiboHttpClient {
 
   private static async performPost(url: string, cookie: string, form: rcp.Form): Promise<string> {
     try {
-      const request: rcp.Request = new rcp.Request(url, 'POST');
-      request.headers = apiOrigin(url) === WEIBO_DESKTOP_REFERER
+      const origin: string = apiOrigin(url);
+      const desktop: boolean = origin === WEIBO_DESKTOP_REFERER;
+      const headers: Record<string, string> = desktop
         ? WeiboHttpClient.buildDesktopHeaders(cookie) : WeiboHttpClient.buildMobileHeaders(cookie);
+      // Origin 只在写请求上补：同源 GET 本来就不发 Origin，凭空多一个自定义头只会扩大与线上
+      // 浏览器的差异，而微博对异常头部组合的容错不可预期（见 docs/IMPLEMENTATION_PROGRESS.md）。
+      headers['Origin'] = desktop ? WEIBO_DESKTOP_ORIGIN : WEIBO_REFERER_ORIGIN;
+      const request: rcp.Request = new rcp.Request(url, 'POST');
+      request.headers = headers;
       request.content = form;
       const response: rcp.Response = await WeiboHttpClient.getSession().fetch(request);
+      WeiboHttpClient.absorbResponseCookies(url, response);
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return await response.toString() ?? '';
       }
@@ -100,6 +119,7 @@ export class WeiboHttpClient {
       const request: rcp.Request = new rcp.Request(url, 'GET');
       request.headers = headers;
       const response = await WeiboHttpClient.getSession().fetch(request);
+      WeiboHttpClient.absorbResponseCookies(url, response);
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return await response.toString() ?? '';
       }
@@ -115,6 +135,26 @@ export class WeiboHttpClient {
       }
       throw new WeiboRequestError(businessError.code ?? -1, message);
     }
+  }
+
+  /**
+   * 把响应里的 Cookie 交回认证层合并。
+   *
+   * 微博的 CSRF 令牌（`XSRF-TOKEN`）会随响应轮换，写接口用「Cookie 里的令牌 == 请求头里的令牌」
+   * 做校验：只发不取的话，登录时快照的令牌迟早过期，之后所有写请求都会被判 403。
+   * 失败的响应也要收：403 常常就是服务端顺手换发新令牌的那一次。
+   */
+  private static absorbResponseCookies(url: string, response: rcp.Response): void {
+    const sink: WeiboCookieSink | null = WeiboHttpClient.cookieSink;
+    if (sink === null) { return; }
+    // 头名字大小写按 HTTP/1.1 是不敏感的，rcp 内部用什么大小写没有承诺（历史上两种都出现过），
+    // 取不到就换另一种写法再试一次，避免漏掉令牌轮换而让后续写请求被判 403。
+    let raw: string | string[] | undefined = response.headers['set-cookie'];
+    if (raw === undefined) { raw = response.headers['Set-Cookie']; }
+    if (raw === undefined) { return; }
+    const merged: string = Array.isArray(raw) ? raw.join('\n') : raw;
+    if (merged.length === 0) { return; }
+    sink(apiOrigin(url), merged);
   }
 
   private static async connectMobileOnly(): Promise<void> {

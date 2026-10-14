@@ -29,6 +29,8 @@ export struct WeiboHotSearch {
   @State isAnimating: boolean = false;
   @StorageLink('fontScale') fontScale: number = 1.0;
   @StorageLink('darkTick') @Watch('onDarkTick') darkTick: number = 0;
+  /** 点击热搜词条：本页是页签根内容，拿不到导航栈，交宿主 Index 切到搜索页并检索（同 #话题# 口径）。 */
+  onOpenTopic: (keyword: string) => void = () => {};
 
   aboutToAppear(): void {
     this.loadTopics();
@@ -103,6 +105,12 @@ export struct WeiboHotSearch {
     }
   }
 
+  /** 词条可搜关键词：接口给的 word_scheme（话题类为 #话题#）优先，缺失时退回展示词。 */
+  private searchKeyword(topic: WeiboHotTopic): string {
+    const scheme: string = topic.query.trim();
+    return scheme.length > 0 ? scheme : topic.word.trim();
+  }
+
   @Builder
   TopicRow(topic: WeiboHotTopic) {
     Row({ space: Spacing.md }) {
@@ -143,6 +151,7 @@ export struct WeiboHotSearch {
     .shadow(Theme.glassShadowStyle())
     .systemMaterial(ImmMaterial.rowItem())
     .borderRadius(Radius.postCard)
+    .onClick((): void => { this.onOpenTopic(this.searchKeyword(topic)); }, 8)
   }
 
   build() {

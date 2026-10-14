@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const load = require('./load.cjs');
 const { RequestQueue } = load('entry/src/main/ets/domain/RequestQueue.ts');
 const { ResponseCache } = load('entry/src/main/ets/domain/ResponseCache.ts');
-const { apiOrigin, xsrfToken } = load('entry/src/main/ets/domain/RequestPolicy.ts');
+const { apiOrigin, xsrfToken, mergeCookieHeader } = load('entry/src/main/ets/domain/RequestPolicy.ts');
 function deferred() { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; }
 test('serial queue prioritizes foreground writes, continues after failure', async () => {
   const queue = new RequestQueue(0), gate = deferred(), order = [];
@@ -49,4 +49,17 @@ test('credentials only target exact HTTPS API hosts', () => {
   }
   assert.equal(xsrfToken('a=1; XSRF-TOKEN=a%2Bb'), 'a+b');
   assert.throws(() => xsrfToken('XSRF-TOKEN=%ZZ'));
+});
+
+test('response cookies are merged into the request cookie header without attributes', () => {
+  assert.equal(mergeCookieHeader('SUB=a; XSRF-TOKEN=old','XSRF-TOKEN=new; Path=/; Domain=.weibo.com; Secure; HttpOnly; SameSite=Lax'),
+    'SUB=a; XSRF-TOKEN=new');
+  assert.equal(mergeCookieHeader('SUB=a','WBPSESS=b'),
+    'SUB=a; WBPSESS=b');
+  assert.equal(mergeCookieHeader('SUB=a','Path=/; Domain=.weibo.com; Expires=Thu, 01 Jan 1970 00:00:00 GMT'),
+    'SUB=a');
+  assert.equal(mergeCookieHeader('SUB=a','SUB=; Path=/'),
+    'SUB=a');
+  assert.equal(mergeCookieHeader('','SUB=fixture'),
+    'SUB=fixture');
 });

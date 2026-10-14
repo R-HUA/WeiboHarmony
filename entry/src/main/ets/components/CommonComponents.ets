@@ -319,7 +319,8 @@ export struct ThreadCard {
   /** 正文里的 @用户名 / #话题# / 网页链接 点击；贴吧卡片不会触发。 */
   onMentionTap: (uid: string, name: string) => void = () => {};
   onTopicTap: (topic: string) => void = () => {};
-  onLinkTap: (url: string) => void = () => {};
+  /** 第二个参数是锚点文字（如「查看图片」），供导航层补判文字型图片链接。 */
+  onLinkTap: (url: string, label: string) => void = () => {};
   /**
    * 微博等非贴吧图床直接交给 ArkUI Image 加载。ImageCache 的下载策略带贴吧专用
    * Referer/Cookie，不能用于其它内容源。
@@ -751,7 +752,7 @@ export struct ThreadCard {
               fontScale: this.fontScale,
               onMentionTap: (uid: string, name: string): void => { this.onMentionTap(uid, name); },
               onTopicTap: (topic: string): void => { this.onTopicTap(topic); },
-              onLinkTap: (url: string): void => { this.onLinkTap(url); },
+              onLinkTap: (url: string, label: string): void => { this.onLinkTap(url, label); },
               onExpandTap: (target: string): void => { this.expandLongText(target); }
             })
           }
@@ -795,7 +796,7 @@ export struct ThreadCard {
                   fontScale: this.fontScale,
                   onMentionTap: (uid: string, name: string): void => { this.onMentionTap(uid, name); },
                   onTopicTap: (topic: string): void => { this.onTopicTap(topic); },
-                  onLinkTap: (url: string): void => { this.onLinkTap(url); },
+                  onLinkTap: (url: string, label: string): void => { this.onLinkTap(url, label); },
                   onExpandTap: (target: string): void => { this.expandLongText(target); }
                 })
               }
