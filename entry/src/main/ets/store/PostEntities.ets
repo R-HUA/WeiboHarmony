@@ -35,6 +35,7 @@ export class PostEntities {
       source: post.source,
       likeCount: state.count,
       commentCount: post.commentCount,
+      commentBulletinMode: post.commentBulletinMode,
       repostCount: post.repostCount,
       isLiked: state.liked,
       repost: post.repost

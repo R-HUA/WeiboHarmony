@@ -8,11 +8,15 @@ export struct InlineVideo {
   @Prop @Watch('onSourceChange') url: string = '';
   @StorageLink('weiboAuthTick') @Watch('onAuthChange') authTick: number = 0;
   @Prop @Watch('onCoverChange') cover: string = '';
+  /** 宫格只展示封面；用户点击后直接进入原生全屏播放器。 */
+  @Prop fullscreenOnTap: boolean = false;
   @State private availableWidth: number = 0;
   @State private coverRatio: number = 16 / 9;
   private onCoverChange(): void { this.coverRatio = 16 / 9; }
   private mediaWidth(): number { return Math.max(1, this.availableWidth); }
-  private mediaHeight(): number { return Math.max(180, Math.min(360, this.mediaWidth() / this.coverRatio)); }
+  private mediaHeight(): number {
+    return this.fullscreenOnTap ? this.mediaWidth() : Math.max(180, Math.min(360, this.mediaWidth() / this.coverRatio));
+  }
   @StorageLink(ACTIVE_FEED_VIDEO_KEY) @Watch('onOwnerChange') owner: string = '';
   @State private failed: boolean = false;
   @State private paused: boolean = false;
@@ -36,12 +40,27 @@ export struct InlineVideo {
   }
   private token: string = `player-${++nextPlayerOwner}`;
   private controller: VideoController = new VideoController();
+  private prepared: boolean = false;
+
+  /** 全屏请求等待原生播放器准备完成，避免首次点击仅激活预览框。 */
+  private play(): void {
+    if (this.active()) {
+      if (this.fullscreenOnTap) {
+        if (this.prepared) { this.controller.requestFullscreen(true); }
+      } else { this.controller.start(); }
+      return;
+    }
+    this.failed = false; this.elapsed = 0; this.duration = 0;
+    this.paused = false; this.controlsVisible = true; this.prepared = false;
+    this.owner = this.token;
+  }
 
   private onAuthChange(): void { this.stop(); }
   private onSourceChange(): void { this.stop(); this.failed = false; }
   private active(): boolean { return this.owner === this.token; }
   private onOwnerChange(): void {
     if (!this.active()) {
+      this.prepared = false;
       this.clearHideTimer();
       if (this.fullscreen) {
         try { this.controller.exitFullscreen(); } catch (_) {}
@@ -64,18 +83,30 @@ export struct InlineVideo {
       if (this.active()) {
         Video({ src: this.url, previewUri: this.cover, controller: this.controller })
           .width(this.mediaWidth()).height(this.mediaHeight())
-          .autoPlay(true).controls(this.fullscreen).objectFit(ImageFit.Contain)
+          .autoPlay(!this.fullscreenOnTap).controls(this.fullscreen).objectFit(ImageFit.Contain)
           // Inline native controls consume vertical drags. Only explicit buttons below receive taps.
           .hitTestBehavior(this.fullscreen ? HitTestMode.Default : HitTestMode.None)
           .onStart((): void => { this.paused = false; this.showControls(); })
           .onPause((): void => { this.paused = true; this.showControls(); })
-          .onPrepared((event): void => { if (event) { this.duration = event.duration; } })
+          .onPrepared((event): void => {
+            if (!this.active()) { return; }
+            if (event) { this.duration = event.duration; }
+            this.prepared = true;
+            if (this.fullscreenOnTap) { this.controller.requestFullscreen(true); }
+          })
           .onUpdate((event): void => { if (event) { this.elapsed = event.time; } })
           .onFinish((): void => { this.stop(); })
           .onError((): void => { this.failed = true; this.stop(); })
-          .onFullscreenChange((event): void => { this.fullscreen = event.fullscreen; this.showControls(); })
+          .onFullscreenChange((event): void => {
+            this.fullscreen = event.fullscreen;
+            if (this.fullscreenOnTap) {
+              if (event.fullscreen) { this.controller.start(); } else { this.stop(); }
+            }
+            this.showControls();
+          })
       } else {
-        Image(this.cover).width(this.mediaWidth()).height(this.mediaHeight()).objectFit(ImageFit.Contain)
+        Image(this.cover).width(this.mediaWidth()).height(this.mediaHeight())
+          .objectFit(this.fullscreenOnTap ? ImageFit.Cover : ImageFit.Contain)
           .onComplete((event): void => {
             if (event && event.width > 0 && event.height > 0) { this.coverRatio = event.width / event.height; }
           })
@@ -89,11 +120,12 @@ export struct InlineVideo {
           }
             .width(72).height(72).padding(0).fontSize(22).fontColor(Color.White)
             .backgroundColor(Color.Transparent)
-            .accessibilityText(this.failed ? '重试播放视频' : '播放视频')
-            .onClick((): void => { if (this.active()) { this.controller.start(); } else { this.failed = false; this.elapsed = 0; this.duration = 0; this.paused = false; this.controlsVisible = true; this.owner = this.token; } }, 8)
+            .accessibilityText(this.failed ? $r('app.string.weibo_video_retry') : this.fullscreenOnTap
+              ? $r('app.string.weibo_video_fullscreen') : $r('app.string.weibo_video_play'))
+            .onClick((): void => { this.play(); }, 8)
         }
       }.width(this.mediaWidth()).height(this.mediaHeight()).justifyContent(FlexAlign.Center)
-      if (this.active() && !this.fullscreen && this.controlsVisible) {
+      if (this.active() && !this.fullscreen && this.controlsVisible && !this.fullscreenOnTap) {
         Row({ space: 4 }) {
           Button({ type: ButtonType.Circle }) {
             if (this.paused) {
@@ -120,10 +152,12 @@ export struct InlineVideo {
         .linearGradient({ angle: 180, colors: [['#00000000', 0], ['#99000000', 1]] })
       }
     }
-    .width(this.mediaWidth()).height(this.mediaHeight()).backgroundColor(Color.Black).borderRadius(12).clip(true)
+    .width(this.mediaWidth()).height(this.mediaHeight()).backgroundColor(Color.Black)
+    .borderRadius(this.fullscreenOnTap ? 8 : 12).clip(true)
     // Consume a genuine background tap without excluding the parent's pan recognizer.
     .onClick((): void => {
-      if (this.active()) {
+      if (this.fullscreenOnTap) { this.play(); }
+      else if (this.active()) {
         if (this.paused) { this.controller.start(); } else { this.controller.pause(); }
         this.showControls();
       }

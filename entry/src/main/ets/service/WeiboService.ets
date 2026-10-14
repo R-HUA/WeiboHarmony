@@ -1,11 +1,13 @@
-import { WeiboApiResponse, WeiboStatusApiResponse, WeiboConfigResponse, WeiboConfigData, WeiboFollowingTimelineResponse, WeiboResponseData, WeiboHotTopicJson, WeiboSuggestionJson, WeiboCardJson, WeiboUserJson, WeiboPictureJson, WeiboPictureSizeJson, WeiboVideoUrlsJson, WeiboVideoMediaInfoJson, WeiboPagePictureJson, WeiboPageInfoJson, WeiboPostJson, WeiboCommentJson, WeiboLongTextResponse } from '../api/WeiboDtos';
+import { WeiboApiResponse, WeiboStatusApiResponse, WeiboConfigResponse, WeiboConfigData, WeiboFollowingTimelineResponse, WeiboResponseData, WeiboSuggestionJson, WeiboCardJson, WeiboUserJson, WeiboPictureJson, WeiboPictureSizeJson, WeiboVideoUrlsJson, WeiboVideoMediaInfoJson, WeiboPagePictureJson, WeiboPageInfoJson, WeiboPostJson, WeiboLongTextResponse } from '../api/WeiboDtos';
 import { WeiboMapper } from '../api/WeiboMapper';
+import { WeiboBuildCommentsResponse, WeiboInteractionsResponse } from '../api/WeiboDtos';
+import { WeiboInteractionsPage } from '../model/WeiboModel';
 import { PostEntities } from '../store/PostEntities';
 import { ResponseCache } from '../domain/ResponseCache';
 import { formatWeiboTime, stripHtml } from '../common/Constants';
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { WeiboHttpClient, WeiboRequestError } from '../network/WeiboHttpClient';
-import { WeiboComment, WeiboCommentsPage, WeiboHotTopic, WeiboPost, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
+import { WeiboCommentCursor, WeiboCommentsPage, WeiboHotCategory, WeiboHotTopic, WeiboPost, WeiboSuggestion, WeiboTimelinePage, WeiboUser } from '../model/WeiboModel';
 import { WeiboAuthManager } from './WeiboAuthManager';
 import { WeiboVisitorSession } from './WeiboVisitorSession';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -21,6 +23,7 @@ export class WeiboService {
   private static instance: WeiboService | null = null;
   private recentPost: WeiboPost | null = null;
   private commentCache: ResponseCache<WeiboCommentsPage> = new ResponseCache<WeiboCommentsPage>();
+  private commentCacheKeys: Map<string, Set<string>> = new Map();
   private pendingLikes: Set<string> = new Set();
   private pendingFollows: Set<string> = new Set();
   private following: Map<string, boolean> = new Map();
@@ -38,6 +41,7 @@ export class WeiboService {
       this.recentPost = null;
       PostEntities.shared().clear();
       this.commentCache = new ResponseCache<WeiboCommentsPage>();
+      this.commentCacheKeys.clear();
       this.pendingLikes.clear();
       this.pendingFollows.clear();
       this.following.clear();
@@ -298,29 +302,82 @@ export class WeiboService {
     return this.recentPost;
   }
 
-  async fetchComments(postId: string, page: number): Promise<WeiboCommentsPage> {
-    const id: string = postId.trim();
-    const safePage: number = page < 1 ? 1 : page;
-    if (safePage !== 1) { return this.fetchCommentsPage(id, safePage); }
-    return this.commentCache.get(id, () => this.fetchCommentsPage(id, 1));
+  /** 首屏缓存按排序隔离；后续页传递服务器游标。 */
+  async fetchComments(post: WeiboPost, param: string = '', cursor: WeiboCommentCursor | null = null): Promise<WeiboCommentsPage> {
+    if (cursor !== null) { return this.fetchCommentsPage(post, '', param, cursor); }
+    const key: string = `${post.id}:${param}`;
+    const keys: Set<string> = this.commentCacheKeys.get(post.id) ?? new Set<string>();
+    keys.add(key);
+    this.commentCacheKeys.set(post.id, keys);
+    return this.commentCache.get(key, () => this.fetchCommentsPage(post, '', param, null));
   }
 
-  prefetchComments(postId: string): void {
-    if (postId.trim().length === 0) { return; }
-    this.fetchComments(postId, 1).catch((): void => {});
+  prefetchComments(post: WeiboPost): void {
+    this.fetchComments(post).catch((error: Error): void => {
+      hilog.debug(0x0000, LOG_TAG, 'event=comment_prefetch_failed post=%{public}s message=%{public}s', post.id, error.message);
+    });
   }
 
-  private async fetchCommentsPage(postId: string, page: number): Promise<WeiboCommentsPage> {
-    const raw: string = await this.get(
-      `https://m.weibo.cn/api/comments/show?id=${encodeURIComponent(postId)}&page=${page}`);
-    const response: WeiboApiResponse = this.parseResponse(raw);
-    const source: WeiboCommentJson[] = response.data?.data ?? [];
-    const items: WeiboComment[] = [];
-    for (let index: number = 0; index < source.length; index++) {
-      items.push(this.toComment(source[index]));
+  /** 子回复使用根评论标识，与主评论列表独立分页。 */
+  fetchCommentReplies(post: WeiboPost, rootId: string, param: string = '',
+    cursor: WeiboCommentCursor | null = null): Promise<WeiboCommentsPage> {
+    return this.fetchCommentsPage(post, rootId, param, cursor);
+  }
+
+  private async fetchCommentsPage(post: WeiboPost, rootId: string, param: string,
+    cursor: WeiboCommentCursor | null): Promise<WeiboCommentsPage> {
+    const child: boolean = rootId.length > 0;
+    let url: string = `https://weibo.com/ajax/statuses/buildComments?is_reload=1&id=${encodeURIComponent(child ? rootId : post.id)}`
+      + `&is_mix=${child ? 1 : 0}&fetch_level=${child ? 1 : 0}&count=20&uid=${encodeURIComponent(post.userId)}&locale=zh-CN`;
+    if (child || post.commentBulletinMode !== undefined) {
+      url += `&is_show_bulletin=${child ? 2 : post.commentBulletinMode}`;
     }
-    const maxId: string = response.data?.max_id ?? '';
-    return { items: items, nextMaxId: maxId, hasMore: maxId.length > 0 && maxId !== '0' };
+    if (cursor !== null) {
+      url += `&max_id=${encodeURIComponent(cursor.maxId)}`;
+      if (cursor.maxIdType) { url += `&max_id_type=${encodeURIComponent(cursor.maxIdType)}`; }
+    }
+    if (param) {
+      const separator: number = param.indexOf('=');
+      if (separator <= 0) { throw new Error('微博评论排序参数不完整'); }
+      url += `&${encodeURIComponent(param.substring(0, separator))}=${encodeURIComponent(param.substring(separator + 1))}`;
+    }
+    const raw: string = await WeiboHttpClient.getDesktop(url, WeiboAuthManager.getInstance().getDesktopCookie());
+    this.parseResponse(raw);
+    const result: WeiboCommentsPage = WeiboMapper.commentsPage(JSON.parse(raw) as WeiboBuildCommentsResponse, cursor, rootId);
+    hilog.debug(0x0000, LOG_TAG, 'event=comments_loaded post=%{public}s root=%{public}s count=%{public}d', post.id, rootId, result.items.length);
+    return result;
+  }
+
+  private invalidateComments(postId: string): void {
+    for (const key of this.commentCacheKeys.get(postId) ?? new Set<string>()) { this.commentCache.invalidate(key); }
+    this.commentCacheKeys.delete(postId);
+  }
+
+  /** 参数与网页版详情的转发、赞页签保持一致。 */
+  async fetchInteractions(postId: string, kind: 'reposts' | 'likes', page: number): Promise<WeiboInteractionsPage> {
+    const endpoint: string = kind === 'reposts' ? 'repostTimeline' : 'likeShow';
+    const params: string = kind === 'reposts' ? '&moduleID=feed' : '&attitude_type=0&attitude_enable=1';
+    const raw: string = await WeiboHttpClient.getDesktop(
+      `https://weibo.com/ajax/statuses/${endpoint}?id=${encodeURIComponent(postId)}&page=${page}&count=20${params}`,
+      WeiboAuthManager.getInstance().getDesktopCookie());
+    this.parseResponse(raw);
+    const result: WeiboInteractionsPage = WeiboMapper.interactionsPage(JSON.parse(raw) as WeiboInteractionsResponse, kind);
+    hilog.debug(0x0000, LOG_TAG, 'event=interactions_loaded post=%{public}s kind=%{public}s page=%{public}d count=%{public}d',
+      postId, kind, page, result.items.length);
+    return result;
+  }
+
+  /** 评论转发保留原帖和评论标识，只有用户发送草稿时调用。 */
+  async repostComment(postId: string, commentId: string, content: string): Promise<void> {
+    this.requireAccountCookie(true);
+    const comment: string = content.trim();
+    if (!postId.trim() || !commentId.trim() || !comment) { throw new Error('转发内容不能为空'); }
+    const generation: number = WeiboAuthManager.getInstance().getGeneration();
+    const form: rcp.Form = new rcp.Form({ id: postId, cid: commentId, comment: comment, is_comment: '0' });
+    form.keys = ['id', 'cid', 'comment', 'is_comment'];
+    await this.postAuthenticatedWrite('https://weibo.com/ajax/statuses/normal_repost', true, form);
+    if (generation !== WeiboAuthManager.getInstance().getGeneration()) { throw new Error('请求已取消'); }
+    hilog.info(0x0000, LOG_TAG, 'event=comment_reposted post=%{public}s comment=%{public}s', postId, commentId);
   }
 
   /** Like or cancel a like. This is never called automatically. */
@@ -358,36 +415,48 @@ export class WeiboService {
     const form: rcp.Form = new rcp.Form({ id: id, content: cleanContent });
     form.keys = ['id', 'content'];
     // A timed-out write may have reached the server too. Never reuse its old comments.
-    this.commentCache.invalidate(id);
+    this.invalidateComments(id);
     try {
       await this.postAuthenticatedWrite('https://m.weibo.cn/api/comments/create', false, form);
-    } finally { this.commentCache.invalidate(id); }
+    } finally { this.invalidateComments(id); }
   }
 
-  /**
-   * Public hot-search board. It is intentionally kept separate from the mobile
-   * session endpoints, so it can work without the user's account cookie.
-   */
-  async fetchHotTopics(limit: number): Promise<WeiboHotTopic[]> {
-    const raw: string = await WeiboHttpClient.getDesktop('https://weibo.com/ajax/side/hotSearch');
-    const response: WeiboApiResponse = this.parseResponse(raw);
-    const source: WeiboHotTopicJson[] = response.data?.realtime ?? [];
-    const result: WeiboHotTopic[] = [];
-    const safeLimit: number = limit > 0 ? limit : source.length;
-    for (let index: number = 0; index < source.length && index < safeLimit; index++) {
-      const item: WeiboHotTopicJson = source[index];
-      const word: string = item.word?.trim() ?? '';
-      if (word.length === 0) {
-        continue;
-      }
-      result.push({
-        rank: item.rank ?? item.realpos ?? index + 1,
-        word: word,
-        heat: item.num ?? 0,
-        label: item.label_name ?? '',
-        query: item.word_scheme ?? word,
-      });
+  /** 仅由用户点击发送触发，cid 指向实际被回复的评论。 */
+  async publishReply(postId: string, commentId: string, content: string): Promise<void> {
+    const id: string = postId.trim();
+    const cid: string = commentId.trim();
+    const comment: string = content.trim();
+    this.requireAccountCookie(true);
+    if (!id || !cid || !comment) { throw new Error('回复对象或内容不完整'); }
+    const form: rcp.Form = new rcp.Form({ id: id, cid: cid, comment: comment });
+    form.keys = ['id', 'cid', 'comment'];
+    this.invalidateComments(id);
+    try {
+      await this.postAuthenticatedWrite('https://weibo.com/ajax/comments/reply', true, form);
+      hilog.info(0x0000, LOG_TAG, 'event=comment_reply_sent post=%{public}s comment=%{public}s', id, cid);
+    } finally { this.invalidateComments(id); }
+  }
+
+  /** 分类使用各自榜单接口，“我的”沿用当前桌面登录态。 */
+  async fetchHotTopics(category: WeiboHotCategory): Promise<WeiboHotTopic[]> {
+    let endpoint: string;
+    switch (category) {
+      case WeiboHotCategory.Hot: endpoint = '/ajax/side/hotSearch'; break;
+      case WeiboHotCategory.Tech: endpoint = '/ajax/statuses/technology'; break;
+      case WeiboHotCategory.Entertainment: endpoint = '/ajax/statuses/entertainment'; break;
+      case WeiboHotCategory.Life: endpoint = '/ajax/statuses/life'; break;
+      case WeiboHotCategory.Social: endpoint = '/ajax/statuses/social'; break;
+      case WeiboHotCategory.Sports: endpoint = '/ajax/statuses/sport'; break;
+      case WeiboHotCategory.Animation: endpoint = '/ajax/statuses/acg'; break;
+      case WeiboHotCategory.Mine: endpoint = '/ajax/statuses/mineBand'; break;
     }
+    const cookie: string = category === 'mine' ? this.requireAccountCookie(true)
+      : WeiboAuthManager.getInstance().getDesktopCookie();
+    const raw: string = await WeiboHttpClient.getDesktop(`https://weibo.com${endpoint}`, cookie);
+    const response: WeiboApiResponse = this.parseResponse(raw);
+    if (response.data === undefined) { throw new Error('微博未返回热搜榜单'); }
+    const result: WeiboHotTopic[] = WeiboMapper.hotTopics(response.data);
+    hilog.debug(0x0000, LOG_TAG, 'event=hot_topics_loaded category=%{public}s count=%{public}d', category, result.length);
     return result;
   }
 
@@ -501,6 +570,9 @@ export class WeiboService {
     if (response.ok !== 1) {
       const message: string = response.msg?.trim() ?? '';
       const url: string = response.url ?? '';
+      if (response.ok === -100 || url.includes('login.php')) {
+        throw new Error('微博要求登录，请在“我的”中完成登录后重试');
+      }
       if (url.includes('captcha')) {
         throw new Error('微博要求验证码，请在设置中更新 Cookie 后重试');
       }
@@ -511,5 +583,4 @@ export class WeiboService {
 
   private toUser(source: WeiboUserJson): WeiboUser { return WeiboMapper.toUser(source); }
   private toPost(source: WeiboPostJson): WeiboPost { return PostEntities.shared().adopt(WeiboMapper.toPost(source)); }
-  private toComment(source: WeiboCommentJson): WeiboComment { return WeiboMapper.toComment(source); }
 }

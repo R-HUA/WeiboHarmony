@@ -1,9 +1,7 @@
 import { InlineVideo } from './InlineVideo';
 import { PictureGallery } from './PictureGallery';
 
-export const MIXED_MEDIA_MAX_PICTURES: number = 2;
-
-/** Mixed media and reposts share the same gallery and full-width inline player. */
+/** 混排视频占用一个宫格项，图片预览仍使用原图片索引。 */
 @Component
 export struct MixedMediaTiles {
   @Prop pictures: string[] = [];
@@ -15,9 +13,10 @@ export struct MixedMediaTiles {
   build() {
     Column({ space: 8 }) {
       if (this.pictures.length > 0) {
-        PictureGallery({ pictures: this.pictures, isDark: this.isDark, onPictureTap: this.onPictureTap })
+        PictureGallery({ pictures: this.pictures, videoUrl: this.videoUrl, videoCoverUrl: this.videoCoverUrl,
+          isDark: this.isDark, onPictureTap: this.onPictureTap })
       }
-      if (this.videoUrl.length > 0) {
+      if (this.videoUrl.length > 0 && this.pictures.length === 0) {
         InlineVideo({ url: this.videoUrl, cover: this.videoCoverUrl })
       }
     }.width('100%')

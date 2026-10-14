@@ -27,7 +27,7 @@ export class SearchStore {
       if (!post.id || ids.has(post.id)) { return false; } ids.add(post.id); return true;
     });
   }
-  async search(value: string): Promise<void> {
+  async search(value: string, withSuggestions: boolean = true): Promise<void> {
     const query: string = value.trim();
     if (!query) { this.clear(); return; }
     if (query !== this.query) { this.posts = []; }
@@ -41,10 +41,12 @@ export class SearchStore {
       if (!this.current(revision, session)) { return; }
       this.posts = this.unique(page.items); this.nextCursor = page.nextCursor;
       this.state = SearchLoadState.Success;
-      try {
-        const suggestions: WeiboSuggestion[] = await this.source.suggestions(query);
-        if (this.current(revision, session)) { this.suggestions = suggestions; }
-      } catch (error) {}
+      if (withSuggestions) {
+        try {
+          const suggestions: WeiboSuggestion[] = await this.source.suggestions(query);
+          if (this.current(revision, session)) { this.suggestions = suggestions; }
+        } catch (error) {}
+      }
     } catch (error) {
       if (!this.current(revision, session)) { return; }
       this.errorMessage = (error as Error).message;

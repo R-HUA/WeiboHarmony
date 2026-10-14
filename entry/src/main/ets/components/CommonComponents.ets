@@ -21,7 +21,7 @@ import { PictureGallery } from './PictureGallery';
 import { Theme, Spacing, Radius, isDarkMode, ImmBlur, ImmMaterial, fs } from '../common/Theme';
 import { RichSegment, parseWeiboRich } from '../common/RichText';
 import { RichTextView } from './RichText';
-import { MIXED_MEDIA_MAX_PICTURES, MixedMediaTiles } from './MediaTiles';
+import { MixedMediaTiles } from './MediaTiles';
 import { WeiboService } from '../service/WeiboService';
 import { ImageCache } from '../cache/ImageCache';
 import { curves, display } from '@kit.ArkUI';
@@ -308,6 +308,8 @@ export struct ThreadCard {
   };
   onTap: (tid: string) => void = () => {};
   onLike: (tid: string, postId: string, liked: boolean) => void = () => {};
+  /** 原文入口独立于转发帖入口，不能沿用当前卡片的帖子标识。 */
+  onRepostTap: (postId: string) => void = () => {};
   // 分享回调：由父组件(Index/ThreadList)注入实现，拉起鸿蒙系统分享面板
   onShare: (data: ThreadSharePayload) => void = () => {};
   // 评论回调：由父组件(Index/ThreadList)注入实现，跳转帖子详情
@@ -808,13 +810,17 @@ export struct ThreadCard {
             .padding(10)
             .backgroundColor(Theme.bgSurface(isDarkMode()))
             .borderRadius(Radius.md)
+            .onClick((): void => {
+              const id: string = this.getItem().repostId ?? '';
+              if (id) { this.onRepostTap(id); }
+            }, 8)
           }
           .width('100%')
           .padding({ left: 16, right: 16, top: 10 })
         }
 
         // ========== 媒体区 ==========
-        // 混合媒体与其它帖子统一为图片网格、视频独占一行。
+        // 混排视频与图片共享宫格，单独的视频保留原播放器。
         if (this.useMixedMediaLayout()) {
           Column() {
             this.MixedMediaRow()
@@ -918,9 +924,8 @@ export struct ThreadCard {
           this.onShare(payload);
         })
         
-        // 评论按钮 - 玻璃胶囊背景不变 + 实心气泡三点图标 ellipsis_message_fill（与分享 sys.symbol.share 同为填充风格，避免描边图标过细）
         Row({ space: this.actionCompact() ? 4 : 6 }) {
-          SymbolGlyph($r('sys.symbol.ellipsis_message_fill'))
+          SymbolGlyph($r('sys.symbol.ellipsis_message'))
             .fontSize(fs(this.actionCompact() ? 15 : 18, this.fontScale))
             .fontColor([Theme.textPrimary(isDarkMode())])
           Text(`${this.getItem().replyNum}`)
@@ -1055,7 +1060,7 @@ export struct ThreadCard {
     return pictures > 0 || video.length > 0;
   }
 
-  /** Repost images use the same nine-cell gallery; video always has its own row. */
+  /** 原文媒体与主帖使用同一宫格和预览入口。 */
   @Builder
   RepostMedia() {
     MixedMediaTiles({
@@ -1070,15 +1075,15 @@ export struct ThreadCard {
     })
   }
 
-  /** Keep the existing mixed-media route; its shared renderer expands the video row. */
+  /** 图视频同时存在时统一混排，不按图片数量拆出视频。 */
   private useMixedMediaLayout(): boolean {
     const video: string = this.getItem().videoUrl ?? '';
     const pictures: number = this.getImageCount();
-    const useMixed: boolean = video.length > 0 && pictures > 0 && pictures <= MIXED_MEDIA_MAX_PICTURES;
+    const useMixed: boolean = video.length > 0 && pictures > 0;
     return useMixed;
   }
 
-  /** Shared picture grid followed by a full-width player. */
+  /** 混排项的图片点击索引保持为原图片列表索引。 */
   @Builder
   MixedMediaRow() {
     MixedMediaTiles({

@@ -267,6 +267,174 @@
     {
       "name": "weibo_following_updated_accessibility",
       "value": "Following, updates available. Tap again to view."
+    },
+    {
+      "name": "weibo_comments_hot",
+      "value": "Popular"
+    },
+    {
+      "name": "weibo_comments_latest",
+      "value": "Latest"
+    },
+    {
+      "name": "weibo_reply",
+      "value": "Reply"
+    },
+    {
+      "name": "weibo_reply_to",
+      "value": "Reply to %s"
+    },
+    {
+      "name": "weibo_cancel_reply",
+      "value": "Cancel reply"
+    },
+    {
+      "name": "weibo_no_replies",
+      "value": "No replies"
+    },
+    {
+      "name": "weibo_more_replies",
+      "value": "Load more replies"
+    },
+    {
+      "name": "weibo_collapse_replies",
+      "value": "Collapse replies"
+    },
+    {
+      "name": "weibo_all_replies",
+      "value": "View all %d replies"
+    },
+    {
+      "name": "weibo_view_replies",
+      "value": "View replies"
+    },
+    {
+      "name": "weibo_more_comments",
+      "value": "Load more comments"
+    },
+    {
+      "name": "weibo_retry",
+      "value": "Retry"
+    },
+    {
+      "name": "weibo_comment_sent_refresh_failed",
+      "value": "Comment sent. Refresh failed: %s"
+    },
+    {
+      "name": "weibo_hot_all",
+      "value": "Trending"
+    },
+    {
+      "name": "weibo_hot_tech",
+      "value": "Technology"
+    },
+    {
+      "name": "weibo_hot_entertainment",
+      "value": "Entertainment"
+    },
+    {
+      "name": "weibo_hot_life",
+      "value": "Lifestyle"
+    },
+    {
+      "name": "weibo_hot_social",
+      "value": "Society"
+    },
+    {
+      "name": "weibo_hot_sports",
+      "value": "Sports"
+    },
+    {
+      "name": "weibo_hot_animation",
+      "value": "Animation"
+    },
+    {
+      "name": "weibo_hot_mine",
+      "value": "For you"
+    },
+    {
+      "name": "weibo_hot_pinned",
+      "value": "Top"
+    },
+    {
+      "name": "weibo_refresh_hot",
+      "value": "Refresh trends"
+    },
+    {
+      "name": "weibo_more_posts",
+      "value": "Load more posts"
+    },
+    {
+      "name": "weibo_image_open_failed",
+      "value": "Could not open the image. Please retry."
+    },
+    {
+      "name": "weibo_hot_target_invalid",
+      "value": "Unable to open this trending topic"
+    },
+    {
+      "name": "weibo_video_fullscreen",
+      "value": "Play video fullscreen"
+    },
+    {
+      "name": "weibo_video_retry",
+      "value": "Retry video playback"
+    },
+    {
+      "name": "weibo_video_play",
+      "value": "Play video"
+    },
+    {
+      "name": "weibo_repost_action",
+      "value": "Reposts"
+    },
+    {
+      "name": "weibo_comments_tab",
+      "value": "Comments"
+    },
+    {
+      "name": "weibo_likes_tab",
+      "value": "Likes"
+    },
+    {
+      "name": "weibo_copy",
+      "value": "Copy"
+    },
+    {
+      "name": "weibo_copied",
+      "value": "Copied"
+    },
+    {
+      "name": "weibo_no_reposts",
+      "value": "No reposts yet"
+    },
+    {
+      "name": "weibo_no_likes",
+      "value": "No likes yet"
+    },
+    {
+      "name": "weibo_repost_success",
+      "value": "Reposted"
+    },
+    {
+      "name": "weibo_interaction_sent_refresh_failed",
+      "value": "Sent. Refresh failed: %s"
+    },
+    {
+      "name": "weibo_repost_placeholder",
+      "value": "Add a repost message"
+    },
+    {
+      "name": "weibo_send_repost",
+      "value": "Send repost"
+    },
+    {
+      "name": "weibo_repost_to",
+      "value": "Repost @%s's comment"
+    },
+    {
+      "name": "weibo_cancel_action",
+      "value": "Cancel"
     }
   ]
 }

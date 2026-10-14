@@ -7,6 +7,7 @@ function fixture(){
  let generation=0,change,loggedIn=true;const requests=[];
  const auth={getGeneration:()=>generation,onSessionChange:cb=>change=cb,getDesktopCookie:()=> 'desktop',getCookie:()=> 'mobile',hasCookie:()=>loggedIn,getAccountId:()=> '99'};
  const {WeiboService}=load('entry/src/main/ets/service/WeiboService.ets',{
+  '../model/WeiboModel':load('entry/src/main/ets/model/WeiboModel.ets'),
   '../api/WeiboMapper':{WeiboMapper},'../store/PostEntities':{PostEntities:{shared:()=>({clear(){},confirmLike(){}})}},
   '../domain/ResponseCache':{ResponseCache:class{}},'../common/Constants':constants,
   '@kit.RemoteCommunicationKit':{rcp:{Form:class{constructor(fields){this.fields=fields;}}}},'@kit.PerformanceAnalysisKit':{hilog:{warn(){}}},

@@ -201,12 +201,12 @@ export struct WeiboUserProfile {
     openWeiboLink(this.getUIContext(), this.weiboNavStack, url, label);
   }
 
-  private openPost(post: WeiboPost): void {
+  private openPost(post: WeiboPost, startAtComments: boolean = false): void {
     if (post.id.length === 0) {
       return;
     }
     WeiboService.getInstance().rememberPost(post);
-    const param: WeiboPostDetailRouteParam = { postId: post.id };
+    const param: WeiboPostDetailRouteParam = { postId: post.id, startAtComments: startAtComments };
     this.weiboNavStack.pushPath({ name: 'WeiboPostDetail', param: param });
   }
 
@@ -364,7 +364,8 @@ export struct WeiboUserProfile {
               ThreadCard({
                 item: this.toThreadCard(post),
                 onTap: (_id: string): void => { this.openPost(post); },
-                onComment: (_id: string): void => { this.openPost(post); },
+                onRepostTap: (_id: string): void => { this.openPost(post.repost!); },
+                onComment: (_id: string): void => { this.openPost(post, true); },
                 onLike: (_id: string, _postId: string, liked: boolean): void => { setWeiboPostLike(this.getUIContext(), post, liked); },
                 onShare: (): void => { shareWeiboPost(this.getUIContext(), post); },
                 onAvatarTap: (id: string, name: string): void => { this.openMention(id, name); },

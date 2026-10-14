@@ -19,7 +19,7 @@ export struct WeiboSearch {
   @Prop topInset: number = 64;
   @Prop @Watch('onEnter') animationTrigger: number = 0;
   @Prop @Watch('onExit') exitTrigger: number = 0;
-  onOpenPost: (post: WeiboPost) => void = () => {};
+  onOpenPost: (post: WeiboPost, startAtComments: boolean) => void = () => {};
   onOpenUserProfile: (userId: string, userName: string) => void = () => {};
   @StorageLink('weiboPostTick') @Watch('onPostEntitiesChanged') postTick: number = 0;
   private onPostEntitiesChanged(): void { this.store.posts = this.store.posts.map((post: WeiboPost): WeiboPost => PostEntities.shared().apply(post)); }
@@ -100,12 +100,12 @@ export struct WeiboSearch {
     return buildWeiboThreadItem(post);
   }
 
-  private openPost(post: WeiboPost): void {
+  private openPost(post: WeiboPost, startAtComments: boolean = false): void {
     if (post.id.length === 0) {
       this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_post_unavailable') });
       return;
     }
-    this.onOpenPost(post);
+    this.onOpenPost(post, startAtComments);
   }
 
   /** 正文/评论里的 #话题#：本页在信息流根内容里，同样借 AppStorage 信号交给宿主导航页。 */
@@ -190,7 +190,8 @@ export struct WeiboSearch {
               ThreadCard({
                 item: this.toThreadCard(post),
                 onTap: (_id: string): void => { this.openPost(post); },
-                onComment: (_id: string): void => { this.openPost(post); },
+                onRepostTap: (_id: string): void => { this.openPost(post.repost!); },
+                onComment: (_id: string): void => { this.openPost(post, true); },
                 onLike: (_id: string, _postId: string, liked: boolean): void => { setWeiboPostLike(this.getUIContext(), post, liked); },
                 onShare: (): void => { shareWeiboPost(this.getUIContext(), post); },
                 onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },

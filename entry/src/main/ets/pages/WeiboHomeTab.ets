@@ -91,7 +91,7 @@ export struct WeiboHomeTab {
   /** Reserved in the scroll content, so floating host chrome never shrinks the scroll viewport. */
   @Prop topInset: number = 0;
   @Prop bottomInset: number = 116;
-  onOpenPost: (post: WeiboPost) => void = () => {};
+  onOpenPost: (post: WeiboPost, startAtComments: boolean) => void = () => {};
   onOpenUserProfile: (userId: string, userName: string) => void = () => {};
   /** 点正文里的 #话题#：由宿主切到搜索页并发起该话题的检索。 */
   onOpenTopic: (topic: string) => void = () => {};
@@ -394,12 +394,12 @@ export struct WeiboHomeTab {
     return buildWeiboThreadItem(post);
   }
 
-  private openPost(post: WeiboPost): void {
+  private openPost(post: WeiboPost, startAtComments: boolean = false): void {
     if (post.id.length === 0) {
       this.getUIContext().getPromptAction().showToast({ message: $r('app.string.weibo_post_unavailable') });
       return;
     }
-    this.onOpenPost(post);
+    this.onOpenPost(post, startAtComments);
   }
 
   private openUserProfile(userId: string, userName: string): void {
@@ -501,7 +501,8 @@ export struct WeiboHomeTab {
     ThreadCard({
       item: this.toThreadCard(post),
       onTap: (_id: string): void => { this.openPost(post); },
-      onComment: (_id: string): void => { this.openPost(post); },
+      onRepostTap: (_id: string): void => { this.openPost(post.repost!); },
+      onComment: (_id: string): void => { this.openPost(post, true); },
       onLike: (_id: string, _postId: string, liked: boolean): void => { this.toggleLike(post, liked); },
       onShare: (data: ThreadSharePayload): void => { this.onShare(data); },
       onAvatarTap: (id: string, name: string): void => { this.openUserProfile(id, name); },

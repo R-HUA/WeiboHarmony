@@ -32,3 +32,12 @@ test('paging failure keeps existing posts and cursor for explicit retry',async()
  const more=f.store.loadMore();f.requests[1].reject(new Error('offline'));await more;
  assert.deepEqual(f.store.posts,[post('a')]);assert.equal(f.store.nextCursor,'p2');assert.equal(f.store.errorMessage,'offline');
 });
+test('hot topic content immediately loads full query and pages without suggestions',async()=>{
+ const f=fixture(),initial=f.store.search('#完整话题#',false);
+ assert.equal(f.requests[0].query,'#完整话题#');
+ f.requests[0].resolve({items:[post('a')],nextCursor:'p2'});await initial;
+ assert.equal(f.suggestions.length,0);assert.deepEqual(f.store.suggestions,[]);
+ const more=f.store.loadMore();assert.equal(f.requests[1].query,'#完整话题#');assert.equal(f.requests[1].cursor,'p2');
+ f.requests[1].resolve({items:[post('b')],nextCursor:null});await more;
+ assert.deepEqual(f.store.posts,[post('a'),post('b')]);assert.equal(f.suggestions.length,0);
+});

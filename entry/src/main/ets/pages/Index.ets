@@ -19,7 +19,8 @@ import { UsageHabitsManager } from '../service/UsageHabitsManager';
 import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { AppSettingsStore, DEFAULT_HIDE_UNSUPPORTED, DEFAULT_HOME_TAB_MATERIAL_LEVEL } from '../service/AppSettingsStore';
 import { WeiboService } from '../service/WeiboService';
-import { WeiboPost, WeiboUser } from '../model/WeiboModel';
+import { WeiboPost, WeiboUser, WeiboHotTopic } from '../model/WeiboModel';
+import { WeiboTopicContentBuilder, WeiboTopicContentRouteParam } from './WeiboTopicContent';
 import { WeiboHomeTab, WeiboTimelineMode } from './WeiboHomeTab';
 import { WeiboPostDetailBuilder, WeiboPostDetailRouteParam } from './WeiboPostDetail';
 import { WeiboUserProfileBuilder, WeiboUserProfileRouteParam } from './WeiboUserProfile';
@@ -219,10 +220,10 @@ struct Index {
     this.updateNavigationMode();
   }
 
-  private openPostDetail(post: WeiboPost): void {
+  private openPostDetail(post: WeiboPost, startAtComments: boolean = false): void {
     WeiboService.getInstance().rememberPost(post);
-    WeiboService.getInstance().prefetchComments(post.id);
-    const param: WeiboPostDetailRouteParam = { postId: post.id };
+    WeiboService.getInstance().prefetchComments(post);
+    const param: WeiboPostDetailRouteParam = { postId: post.id, startAtComments: startAtComments };
     this.openContentDestination();
     this.weiboNavStack.pushPath({ name: 'WeiboPostDetail', param: param });
   }
@@ -231,6 +232,12 @@ struct Index {
     const param: WeiboUserProfileRouteParam = { userId: userId, userName: userName };
     this.openContentDestination();
     this.weiboNavStack.pushPath({ name: 'WeiboUserProfile', param: param });
+  }
+
+  private openHotTopic(topic: WeiboHotTopic): void {
+    const param: WeiboTopicContentRouteParam = { title: topic.word, query: topic.query };
+    this.openContentDestination();
+    this.weiboNavStack.pushPath({ name: 'WeiboTopicContent', param: param });
   }
 
   private onHomeTabMaterialChanged(): void {
@@ -775,7 +782,7 @@ struct Index {
             exitTrigger: this.page1Exit,
             scrollTopTrigger: this.homeScrollTopTrigger,
             isActive: this.homeMode === WeiboTimelineMode.Recommend,
-            onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
+            onOpenPost: (post: WeiboPost, startAtComments: boolean): void => this.openPostDetail(post, startAtComments),
             onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName),
             onOpenTopic: (topic: string): void => this.openTopicSearch(topic)
           })
@@ -795,7 +802,7 @@ struct Index {
             exitTrigger: this.page1Exit,
             scrollTopTrigger: this.homeScrollTopTrigger,
             isActive: this.homeMode === WeiboTimelineMode.Following,
-            onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
+            onOpenPost: (post: WeiboPost, startAtComments: boolean): void => this.openPostDetail(post, startAtComments),
             onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName),
             onOpenTopic: (topic: string): void => this.openTopicSearch(topic)
           })
@@ -1159,8 +1166,7 @@ struct Index {
         topInset: this.contentTopInset(),
         animationTrigger: this.page2Enter,
         exitTrigger: this.page2Exit,
-        // 热搜词条点击：与 #话题# 同一条路径，切到搜索页直接搜掉这个关键词
-        onOpenTopic: (keyword: string): void => this.openTopicSearch(keyword)
+        onOpenTopic: (topic: WeiboHotTopic): void => this.openHotTopic(topic)
       })
     }
     .tabBar(this.hdsTabBar(this.symbolFor(WeiboTab.Discover), $r('app.string.weibo_tab_discover')))
@@ -1171,7 +1177,7 @@ struct Index {
         topInset: this.searchContentTopInset(),
         animationTrigger: this.page3Enter,
         exitTrigger: this.page3Exit,
-        onOpenPost: (post: WeiboPost): void => this.openPostDetail(post),
+        onOpenPost: (post: WeiboPost, startAtComments: boolean): void => this.openPostDetail(post, startAtComments),
         onOpenUserProfile: (userId: string, userName: string): void => this.openUserProfile(userId, userName)
       })
     }
@@ -1253,6 +1259,8 @@ struct Index {
       WeiboPostDetailBuilder()
     } else if (name === 'WeiboUserProfile') {
       WeiboUserProfileBuilder()
+    } else if (name === 'WeiboTopicContent') {
+      WeiboTopicContentBuilder()
     }
   }
 

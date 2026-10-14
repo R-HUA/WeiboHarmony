@@ -455,6 +455,174 @@
     {
       "name": "weibo_following_updated_accessibility",
       "value": "关注，有更新，再次点击查看"
+    },
+    {
+      "name": "weibo_comments_hot",
+      "value": "热门"
+    },
+    {
+      "name": "weibo_comments_latest",
+      "value": "最新"
+    },
+    {
+      "name": "weibo_reply",
+      "value": "回复"
+    },
+    {
+      "name": "weibo_reply_to",
+      "value": "回复 %s"
+    },
+    {
+      "name": "weibo_cancel_reply",
+      "value": "取消回复"
+    },
+    {
+      "name": "weibo_no_replies",
+      "value": "暂无回复"
+    },
+    {
+      "name": "weibo_more_replies",
+      "value": "加载更多回复"
+    },
+    {
+      "name": "weibo_collapse_replies",
+      "value": "收起回复"
+    },
+    {
+      "name": "weibo_all_replies",
+      "value": "查看全部 %d 条回复"
+    },
+    {
+      "name": "weibo_view_replies",
+      "value": "查看回复"
+    },
+    {
+      "name": "weibo_more_comments",
+      "value": "加载更多评论"
+    },
+    {
+      "name": "weibo_retry",
+      "value": "重试"
+    },
+    {
+      "name": "weibo_comment_sent_refresh_failed",
+      "value": "评论已发送，刷新失败：%s"
+    },
+    {
+      "name": "weibo_hot_all",
+      "value": "热搜"
+    },
+    {
+      "name": "weibo_hot_tech",
+      "value": "科技"
+    },
+    {
+      "name": "weibo_hot_entertainment",
+      "value": "文娱"
+    },
+    {
+      "name": "weibo_hot_life",
+      "value": "生活"
+    },
+    {
+      "name": "weibo_hot_social",
+      "value": "社会"
+    },
+    {
+      "name": "weibo_hot_sports",
+      "value": "体育"
+    },
+    {
+      "name": "weibo_hot_animation",
+      "value": "动漫"
+    },
+    {
+      "name": "weibo_hot_mine",
+      "value": "我的"
+    },
+    {
+      "name": "weibo_hot_pinned",
+      "value": "置顶"
+    },
+    {
+      "name": "weibo_refresh_hot",
+      "value": "刷新热搜"
+    },
+    {
+      "name": "weibo_more_posts",
+      "value": "加载更多微博"
+    },
+    {
+      "name": "weibo_image_open_failed",
+      "value": "原图打开失败，请重试"
+    },
+    {
+      "name": "weibo_hot_target_invalid",
+      "value": "热搜信息不完整，无法打开内容"
+    },
+    {
+      "name": "weibo_video_fullscreen",
+      "value": "全屏播放视频"
+    },
+    {
+      "name": "weibo_video_retry",
+      "value": "重试播放视频"
+    },
+    {
+      "name": "weibo_video_play",
+      "value": "播放视频"
+    },
+    {
+      "name": "weibo_repost_action",
+      "value": "转发"
+    },
+    {
+      "name": "weibo_comments_tab",
+      "value": "评论"
+    },
+    {
+      "name": "weibo_likes_tab",
+      "value": "赞"
+    },
+    {
+      "name": "weibo_copy",
+      "value": "复制"
+    },
+    {
+      "name": "weibo_copied",
+      "value": "已复制"
+    },
+    {
+      "name": "weibo_no_reposts",
+      "value": "暂无转发"
+    },
+    {
+      "name": "weibo_no_likes",
+      "value": "暂无点赞"
+    },
+    {
+      "name": "weibo_repost_success",
+      "value": "转发成功"
+    },
+    {
+      "name": "weibo_interaction_sent_refresh_failed",
+      "value": "已发送，刷新失败：%s"
+    },
+    {
+      "name": "weibo_repost_placeholder",
+      "value": "写转发理由"
+    },
+    {
+      "name": "weibo_send_repost",
+      "value": "发送转发"
+    },
+    {
+      "name": "weibo_repost_to",
+      "value": "转发 @%s 的评论"
+    },
+    {
+      "name": "weibo_cancel_action",
+      "value": "取消"
     }
   ]
 }

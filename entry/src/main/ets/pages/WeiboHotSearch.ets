@@ -1,4 +1,5 @@
-import { WeiboHotTopic } from '../model/WeiboModel';
+import { WeiboHotCategory, WeiboHotTopic } from '../model/WeiboModel';
+import { WeiboAuthManager } from '../service/WeiboAuthManager';
 import { curves } from '@kit.ArkUI';
 import { WeiboService } from '../service/WeiboService';
 import { ImmBlur, ImmMaterial, Radius, Spacing, Theme, fs, isDarkMode } from '../common/Theme';
@@ -13,7 +14,7 @@ enum HotLoadState {
 
 type TabAnimationDirection = 'left' | 'right';
 
-/** Public Weibo hot-search board; no account cookie or visitor-session creation is needed. */
+/** 每个分类读取自己的真实榜单，词条由宿主压入内容页导航。 */
 @Component
 export struct WeiboHotSearch {
   pageScroller: Scroller = new Scroller();
@@ -23,16 +24,44 @@ export struct WeiboHotSearch {
   @State isDark: boolean = isDarkMode();
   @State state: HotLoadState = HotLoadState.Idle;
   @State topics: WeiboHotTopic[] = [];
+  @State category: WeiboHotCategory = WeiboHotCategory.Hot;
+  private revision: number = 0;
+  private readonly categories: WeiboHotCategory[] = [WeiboHotCategory.Hot, WeiboHotCategory.Tech,
+    WeiboHotCategory.Entertainment, WeiboHotCategory.Life, WeiboHotCategory.Social,
+    WeiboHotCategory.Sports, WeiboHotCategory.Animation, WeiboHotCategory.Mine];
+  @StorageLink('weiboAuthTick') @Watch('onSessionChanged') authTick: number = 0;
   @State errorMessage: string = '';
   @State pageTranslateX: number = 0;
   @State pageOpacity: number = 1;
   @State isAnimating: boolean = false;
   @StorageLink('fontScale') fontScale: number = 1.0;
   @StorageLink('darkTick') @Watch('onDarkTick') darkTick: number = 0;
-  /** 点击热搜词条：本页是页签根内容，拿不到导航栈，交宿主 Index 切到搜索页并检索（同 #话题# 口径）。 */
-  onOpenTopic: (keyword: string) => void = () => {};
+  onOpenTopic: (topic: WeiboHotTopic) => void = () => {};
 
   aboutToAppear(): void {
+    this.loadTopics();
+  }
+
+  aboutToDisappear(): void { this.revision++; }
+  private onSessionChanged(): void { this.loadTopics(); }
+
+  private categoryLabel(category: WeiboHotCategory): ResourceStr {
+    switch (category) {
+      case WeiboHotCategory.Hot: return $r('app.string.weibo_hot_all');
+      case WeiboHotCategory.Tech: return $r('app.string.weibo_hot_tech');
+      case WeiboHotCategory.Entertainment: return $r('app.string.weibo_hot_entertainment');
+      case WeiboHotCategory.Life: return $r('app.string.weibo_hot_life');
+      case WeiboHotCategory.Social: return $r('app.string.weibo_hot_social');
+      case WeiboHotCategory.Sports: return $r('app.string.weibo_hot_sports');
+      case WeiboHotCategory.Animation: return $r('app.string.weibo_hot_animation');
+      case WeiboHotCategory.Mine: return $r('app.string.weibo_hot_mine');
+    }
+  }
+
+  private selectCategory(category: WeiboHotCategory): void {
+    if (this.category === category) { return; }
+    this.category = category;
+    this.pageScroller.scrollTo({ xOffset: 0, yOffset: 0 });
     this.loadTopics();
   }
 
@@ -92,33 +121,31 @@ export struct WeiboHotSearch {
   }
 
   private async loadTopics(): Promise<void> {
+    const revision: number = ++this.revision;
+    const session: number = WeiboAuthManager.getInstance().getGeneration();
     this.state = HotLoadState.Loading;
     this.errorMessage = '';
     try {
-      const result: WeiboHotTopic[] = await WeiboService.getInstance().fetchHotTopics(30);
+      const result: WeiboHotTopic[] = await WeiboService.getInstance().fetchHotTopics(this.category);
+      if (revision !== this.revision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.topics = result;
       this.state = HotLoadState.Success;
     } catch (error) {
+      if (revision !== this.revision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.topics = [];
       this.errorMessage = (error as Error).message ?? '微博热搜加载失败，请稍后重试';
       this.state = HotLoadState.Error;
     }
   }
 
-  /** 词条可搜关键词：接口给的 word_scheme（话题类为 #话题#）优先，缺失时退回展示词。 */
-  private searchKeyword(topic: WeiboHotTopic): string {
-    const scheme: string = topic.query.trim();
-    return scheme.length > 0 ? scheme : topic.word.trim();
-  }
-
   @Builder
   TopicRow(topic: WeiboHotTopic) {
     Row({ space: Spacing.md }) {
-      Text(`${topic.rank}`)
-        .width(26)
+      Text(topic.rank === null ? $r('app.string.weibo_hot_pinned') : `${topic.rank}`)
+        .width(fs(32, this.fontScale))
         .fontSize(fs(14, this.fontScale))
-        .fontWeight(topic.rank <= 3 ? FontWeight.Bold : FontWeight.Regular)
-        .fontColor(topic.rank <= 3 ? Theme.brand() : Theme.textSecondary(this.isDark))
+        .fontWeight(topic.rank === null || topic.rank <= 3 ? FontWeight.Bold : FontWeight.Regular)
+        .fontColor(topic.rank === null || topic.rank <= 3 ? Theme.brand() : Theme.textSecondary(this.isDark))
         .textAlign(TextAlign.Center)
       Column({ space: 4 }) {
         Row({ space: Spacing.sm }) {
@@ -126,7 +153,7 @@ export struct WeiboHotSearch {
             .fontSize(fs(15, this.fontScale))
             .fontColor(Theme.textPrimary(this.isDark))
             .fontWeight(FontWeight.Medium)
-            .maxLines(1)
+            .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
           if (topic.label.length > 0) {
@@ -136,9 +163,11 @@ export struct WeiboHotSearch {
           }
         }
         .width('100%')
-        Text(`${topic.heat}`)
-          .fontSize(fs(11, this.fontScale))
-          .fontColor(Theme.textTertiary(this.isDark))
+        if (topic.description.length > 0 || topic.heat !== null) {
+          Text(topic.description.length > 0 ? topic.description : `${topic.heat}`)
+            .fontSize(fs(11, this.fontScale))
+            .fontColor(Theme.textTertiary(this.isDark))
+        }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
@@ -151,16 +180,42 @@ export struct WeiboHotSearch {
     .shadow(Theme.glassShadowStyle())
     .systemMaterial(ImmMaterial.rowItem())
     .borderRadius(Radius.postCard)
-    .onClick((): void => { this.onOpenTopic(this.searchKeyword(topic)); }, 8)
+    .onClick((): void => { this.onOpenTopic(topic); }, 8)
   }
 
   build() {
     Scroll(this.pageScroller) {
       Column({ space: Spacing.md }) {
-        Text($r('app.string.weibo_hot_hint'))
-          .fontSize(fs(12, this.fontScale))
-          .fontColor(Theme.textSecondary(this.isDark))
-          .width('100%')
+        Row({ space: Spacing.sm }) {
+          Scroll() {
+            Row({ space: Spacing.sm }) {
+              ForEach(this.categories, (category: WeiboHotCategory): void => {
+                Button(this.categoryLabel(category), { type: ButtonType.Normal })
+                  .fontSize(fs(14, this.fontScale))
+                  .fontColor(this.category === category ? Theme.brand() : Theme.textSecondary(this.isDark))
+                  .backgroundColor(Color.Transparent)
+                  .borderRadius(0)
+                  .border({ width: { bottom: this.category === category ? 2 : 0 }, color: Theme.brand() })
+                  .onClick((): void => { this.selectCategory(category); })
+              }, (category: WeiboHotCategory): string => category)
+            }
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off)
+          .layoutWeight(1)
+          Button() {
+            SymbolGlyph($r('sys.symbol.arrow_clockwise'))
+              .fontSize(fs(20, this.fontScale))
+              .fontColor([Theme.textPrimary(this.isDark)])
+          }
+          .width(44)
+          .height(44)
+          .backgroundColor(Color.Transparent)
+          .accessibilityText($r('app.string.weibo_refresh_hot'))
+          .enabled(this.state !== HotLoadState.Loading)
+          .onClick((): void => { this.loadTopics(); })
+        }
+        .width('100%')
         if (this.state === HotLoadState.Loading) {
           LoadingView({ message: $r('app.string.weibo_loading') })
             .height(360)
@@ -174,7 +229,7 @@ export struct WeiboHotSearch {
           Column({ space: Spacing.sm }) {
             ForEach(this.topics, (topic: WeiboHotTopic): void => {
               this.TopicRow(topic)
-            }, (topic: WeiboHotTopic): string => `${topic.rank}_${topic.word}`)
+            }, (topic: WeiboHotTopic): string => topic.query)
           }
           .width('100%')
         } else {

@@ -220,7 +220,9 @@ export struct WeiboFeed {
     this.comments = [];
     this.commentsLoading = true;
     try {
-      const page = await WeiboService.getInstance().fetchComments(postId, 1);
+      const post: WeiboPost = this.posts.find((item: WeiboPost): boolean => item.id === postId)
+        ?? await WeiboService.getInstance().fetchPost(postId);
+      const page = await WeiboService.getInstance().fetchComments(post);
       this.comments = page.items;
     } catch (error) {
       this.errorMessage = (error as Error).message ?? '评论读取失败，请稍后重试';

@@ -1,8 +1,81 @@
 import { formatWeiboTime, stripHtml } from '../common/Constants';
-import { WeiboUser, WeiboPost, WeiboComment } from '../model/WeiboModel';
+import { WeiboUser, WeiboPost, WeiboComment, WeiboCommentsPage, WeiboCommentCursor, WeiboCommentFilter, WeiboHotTopic } from '../model/WeiboModel';
+import { WeiboBuildCommentsResponse, WeiboInteractionsResponse, WeiboInteractionJson } from './WeiboDtos';
+import { WeiboInteraction, WeiboInteractionsPage } from '../model/WeiboModel';
 import { WeiboApiResponse, WeiboStatusApiResponse, WeiboConfigResponse, WeiboConfigData, WeiboFollowingTimelineResponse, WeiboResponseData, WeiboHotTopicJson, WeiboSuggestionJson, WeiboCardJson, WeiboUserJson, WeiboPictureJson, WeiboPictureSizeJson, WeiboDesktopPicJson, WeiboMixedMediaJson, WeiboMixedMediaInfoJson, WeiboMixedMediaVideoJson, WeiboMixMediaItemJson, WeiboMixMediaDataJson, WeiboMixMediaInfoJson, WeiboMixMediaVideoJson, WeiboVideoUrlsJson, WeiboVideoMediaInfoJson, WeiboPagePictureJson, WeiboPageInfoJson, WeiboPostJson, WeiboCommentJson, WeiboLongTextData, WeiboLongTextResponse } from './WeiboDtos';
 
 export class WeiboMapper {
+  /** 赞的条目标识使用用户 ID；转发保留微博 ID。 */
+  static interactionsPage(source: WeiboInteractionsResponse, kind: 'reposts' | 'likes'): WeiboInteractionsPage {
+    if (!Array.isArray(source.data) || !Number.isInteger(source.total_number) || source.total_number! < 0) {
+      throw new Error('微博互动列表信息不完整');
+    }
+    if (kind === 'reposts' && (!Number.isInteger(source.max_page) || source.max_page! < 0)) {
+      throw new Error('微博转发分页信息不完整');
+    }
+    const items: WeiboInteraction[] = source.data.map((item: WeiboInteractionJson): WeiboInteraction => {
+      if (item.user === undefined) { throw new Error('微博互动列表缺少用户信息'); }
+      const user: WeiboUser = WeiboMapper.toUser(item.user);
+      const id: string = kind === 'likes' ? user.id : item.idstr ?? WeiboMapper.id(item.id);
+      if (!id || !user.id || !user.screenName) { throw new Error('微博互动列表标识不完整'); }
+      return { id: id, userId: user.id, userName: user.screenName, userAvatar: user.avatarUrl,
+        rawText: item.text ?? item.text_raw ?? '', createdAt: item.created_at ? formatWeiboTime(item.created_at) : '' };
+    });
+    return { items: items, totalCount: source.total_number!, maxPage: source.max_page };
+  }
+
+  /** 榜单展示词与检索词分别保存，话题标记遵循上游字段。 */
+  static hotTopics(data: WeiboResponseData): WeiboHotTopic[] {
+    const source: WeiboHotTopicJson[] | undefined = data.realtime ?? data.band_list;
+    if (!Array.isArray(source)) { throw new Error('微博未返回热搜榜单'); }
+    const pinned: WeiboHotTopicJson[] = Array.isArray(data.hotgovs) ? data.hotgovs : [];
+    const result: WeiboHotTopic[] = [];
+    const ids: Set<string> = new Set();
+    const entries: WeiboHotTopicJson[] = pinned.concat(source);
+    for (let index: number = 0; index < entries.length; index++) {
+      const item: WeiboHotTopicJson = entries[index];
+      const topic: string = stripHtml(item.topic ?? '').trim();
+      const word: string = stripHtml(item.word ?? topic).trim();
+      if (!word) { throw new Error('微博热搜词条缺少名称'); }
+      const query: string = item.word_scheme?.trim() || (topic ? `#${topic.replace(/^#|#$/g, '')}#`
+        : item.topic_flag === 1 ? `#${word.replace(/^#|#$/g, '')}#` : word);
+      if (ids.has(query)) { continue; }
+      ids.add(query);
+      const isPinned: boolean = index < pinned.length || item.isTop === 1;
+      result.push({
+        rank: isPinned ? null : item.realpos ?? (item.rank === undefined ? index - pinned.length + 1 : item.rank + 1),
+        word: word,
+        query: query,
+        heat: item.num ?? null,
+        description: stripHtml(item.description ?? ''),
+        label: item.label_name ?? item.icon_desc ?? '',
+      });
+    }
+    return result;
+  }
+
+  /** 分页和排序均以服务器元数据为准，不对已加载的一页做本地重排。 */
+  static commentsPage(source: WeiboBuildCommentsResponse, cursor: WeiboCommentCursor | null,
+    rootId: string = ''): WeiboCommentsPage {
+    if (!Array.isArray(source.data)) { throw new Error('微博未返回评论列表'); }
+    const filters: WeiboCommentFilter[] = [];
+    for (const filter of source.filter_group ?? []) {
+      const title: string = stripHtml(filter.title ?? '');
+      if (!/热度|热门|时间|最新/.test(title)) { continue; }
+      if (!filter.param) { throw new Error('微博评论排序信息不完整'); }
+      filters.push({ order: /热度|热门/.test(title) ? 'hot' : 'latest',
+        param: filter.param, isDefault: Number(filter.isDefault) === 1 });
+    }
+    const maxId: string = source.max_id === undefined ? '' : WeiboMapper.id(source.max_id);
+    if (source.max_id !== undefined && !maxId) { throw new Error('微博评论游标不完整'); }
+    const maxIdType: string = source.max_id_type === undefined ? '' : `${source.max_id_type}`;
+    const hasMore: boolean = source.data.length > 0 && maxId.length > 0 && maxId !== '0'
+      && (cursor === null || cursor.maxId !== maxId || cursor.maxIdType !== maxIdType);
+    return { items: source.data.map((item: WeiboCommentJson): WeiboComment => WeiboMapper.toComment(item, rootId)),
+      nextCursor: hasMore ? { maxId: maxId, maxIdType: maxIdType } : null,
+      totalCount: source.total_number, filters: filters };
+  }
+
   private static id(value: string | number | undefined): string {
     if (typeof value === 'string') { return value; }
     return typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '';
@@ -236,16 +309,24 @@ export class WeiboMapper {
       source: stripHtml(source.source ?? ''),
       likeCount: source.attitudes_count ?? 0,
       commentCount: source.comments_count ?? 0,
+      commentBulletinMode: source.is_show_bulletin,
       repostCount: source.reposts_count ?? 0,
       isLiked: source.attitudes_status === 1,
       repost: repostSource === undefined ? null : WeiboMapper.toPost(repostSource),
     };
   }
 
-  static toComment(source: WeiboCommentJson): WeiboComment {
+  /** 子回复继承所属根评论，避免将回复误发到原帖。 */
+  static toComment(source: WeiboCommentJson, rootId: string = ''): WeiboComment {
     const author: WeiboUser = WeiboMapper.toUser(source.user ?? {});
+    const id: string = source.idstr ?? WeiboMapper.id(source.id);
+    if (!id) { throw new Error('微博评论标识不完整'); }
+    const sourceRoot: string = WeiboMapper.id(source.rootid);
+    const root: string = (sourceRoot === '0' ? '' : sourceRoot) || rootId || id;
+    const target: WeiboCommentJson | undefined = source.reply_comment;
+    const targetUser: WeiboUser = WeiboMapper.toUser(target?.user ?? {});
     return {
-      id: WeiboMapper.id(source.id),
+      id: id,
       userId: author.id,
       userName: author.screenName,
       userAvatar: author.avatarUrl,
@@ -254,6 +335,14 @@ export class WeiboMapper {
       rawText: source.text ?? '',
       createdAt: formatWeiboTime(source.created_at ?? ''),
       likeCount: source.like_count ?? 0,
+      rootId: root,
+      replyTo: target === undefined ? null : {
+        id: target.idstr ?? WeiboMapper.id(target.id),
+        userId: targetUser.id,
+        userName: targetUser.screenName,
+      },
+      replyCount: source.total_number ?? 0,
+      replies: (source.comments ?? []).map((reply: WeiboCommentJson): WeiboComment => WeiboMapper.toComment(reply, root)),
     };
   }
 }

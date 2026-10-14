@@ -56,6 +56,8 @@ export interface WeiboResponseData {
   data?: WeiboCommentJson[];
   max_id?: string;
   realtime?: WeiboHotTopicJson[];
+  band_list?: WeiboHotTopicJson[];
+  hotgovs?: WeiboHotTopicJson[];
   hotquery?: WeiboSuggestionJson[];
 }
 
@@ -66,6 +68,46 @@ export interface WeiboHotTopicJson {
   num?: number;
   label_name?: string;
   word_scheme?: string;
+  topic?: string;
+  topic_flag?: number;
+  description?: string;
+  icon_desc?: string;
+  isTop?: number;
+}
+
+/** 桌面评论接口将列表和排序元数据放在响应顶层。 */
+export interface WeiboBuildCommentsResponse {
+  ok?: number;
+  msg?: string;
+  data?: WeiboCommentJson[];
+  max_id?: string | number;
+  max_id_type?: string | number;
+  total_number?: number;
+  filter_group?: WeiboCommentFilterJson[];
+}
+
+export interface WeiboCommentFilterJson {
+  title?: string;
+  param?: string;
+  isDefault?: number | string;
+}
+
+/** 网页版转发和赞列表的条目均包含 user，分页元数据位于顶层。 */
+export interface WeiboInteractionsResponse {
+  ok?: number;
+  msg?: string;
+  data?: WeiboInteractionJson[];
+  total_number?: number;
+  max_page?: number;
+}
+
+export interface WeiboInteractionJson {
+  id?: string | number;
+  idstr?: string;
+  user?: WeiboUserJson;
+  text?: string;
+  text_raw?: string;
+  created_at?: string;
 }
 
 export interface WeiboSuggestionJson {
@@ -257,6 +299,7 @@ export interface WeiboPostJson {
   source?: string;
   attitudes_count?: number;
   comments_count?: number;
+  is_show_bulletin?: number;
   reposts_count?: number;
   attitudes_status?: number;
   user?: WeiboUserJson;
@@ -279,9 +322,14 @@ export interface WeiboPostJson {
 }
 
 export interface WeiboCommentJson {
-  id?: string;
+  id?: string | number;
+  idstr?: string;
   text?: string;
   created_at?: string;
   like_count?: number;
   user?: WeiboUserJson;
+  rootid?: string | number;
+  reply_comment?: WeiboCommentJson;
+  total_number?: number;
+  comments?: WeiboCommentJson[];
 }

@@ -31,3 +31,12 @@ test('original-only and parent-only videos stay with their owner; mapping leaves
  const onlyParent=buildWeiboThreadItem(WeiboMapper.toPost({...video('2','https://cdn.invalid/b.mp4'),retweeted_status:{id:'1',text:'无视频'}}));
  assert.equal(onlyParent.videoUrl,'https://cdn.invalid/b.mp4');assert.equal(onlyParent.repostVideoUrl,undefined);
 });
+test('repost navigation identity and every image remain attached to the original mixed post',()=>{
+ const pictures=Array.from({length:9},(_,index)=>({original:{url:`https://cdn.invalid/image-${index}.jpg`}}));
+ const post=WeiboMapper.toPost({id:'wrapper',retweeted_status:{...video('original','https://cdn.invalid/original.mp4'),pics:pictures}});
+ const card=buildWeiboThreadItem(post);
+ assert.equal(card.tid,'wrapper');assert.equal(card.repostId,'original');
+ assert.equal(card.repostVideoUrl,'https://cdn.invalid/original.mp4');
+ assert.equal(card.repostImages.length,9);assert.deepEqual(card.repostPreviewImages,post.repost.previewPictures);
+ assert.equal(card.videoUrl,'');assert.deepEqual(card.images,[]);
+});

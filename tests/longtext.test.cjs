@@ -6,6 +6,7 @@ function fixture(){
  let generation=0,change;const requests=[],desktop=[];
  const auth={getGeneration:()=>generation,onSessionChange:callback=>change=callback,getDesktopCookie:()=> 'synthetic-desktop'};
  const {WeiboService}=load('entry/src/main/ets/service/WeiboService.ets',{
+  '../model/WeiboModel':load('entry/src/main/ets/model/WeiboModel.ets'),
   '../api/WeiboMapper':{WeiboMapper},'../store/PostEntities':{PostEntities:{shared:()=>({clear(){}})}},
   '../domain/ResponseCache':{ResponseCache:class{}},'../common/Constants':constants,
   '@kit.RemoteCommunicationKit':{},'@kit.PerformanceAnalysisKit':{hilog:{warn(){}}},
