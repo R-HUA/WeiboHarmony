@@ -141,6 +141,8 @@ test('main comments and child replies use distinct buildComments parameters and 
   assert.equal(query.get('id'), 'p1'); assert.equal(query.get('uid'), 'u1');
   assert.equal(query.get('is_mix'), '0'); assert.equal(query.get('fetch_level'), '0');
   assert.equal(query.get('is_show_bulletin'), '1'); assert.equal(query.get('flow'), 'hot-value');
+  assert.equal(query.get('type'), 'feed');
+  assert.equal(query.get('max_id'), '');
   f.reads[0].resolve(JSON.stringify(rawPage())); await main;
   const child = f.service.fetchCommentReplies(post, 'root', 'flow=time-value', { maxId: 'next', maxIdType: '2' });
   const childQuery = new URL(f.reads[1].url).searchParams;
@@ -150,6 +152,28 @@ test('main comments and child replies use distinct buildComments parameters and 
   assert.equal(childQuery.get('flow'), 'time-value');
   f.reads[1].resolve(JSON.stringify(rawPage())); await child;
   await assert.rejects(f.service.fetchComments(post, 'invented'), /排序参数/);
+});
+
+test('mobile recommendation comments obtain the original desktop mode before requesting comments', async () => {
+  const f = serviceFixture(), mobilePost = { id: 'p1', userId: 'u1' };
+  const request = f.service.fetchComments(mobilePost);
+  assert.equal(f.reads[0].url, 'https://weibo.com/ajax/statuses/show?id=p1');
+  f.reads[0].resolve(JSON.stringify({ ok: 1, idstr: 'p1', is_show_bulletin: 0 }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(new URL(f.reads[1].url).searchParams.get('is_show_bulletin'), '0');
+  f.reads[1].resolve(JSON.stringify(rawPage())); await request;
+  const more = f.service.fetchComments(mobilePost, '', { maxId: 'next' });
+  assert.match(f.reads[2].url, /buildComments/);
+  f.reads[2].resolve(JSON.stringify(rawPage())); await more;
+});
+
+test('missing desktop comment mode and session changes stop before sending an incomplete request', async () => {
+  const missing = serviceFixture(), request = missing.service.fetchComments({ id: 'p1', userId: 'u1' });
+  missing.reads[0].resolve('{"ok":1}'); await assert.rejects(request, /评论模式/);
+  assert.equal(missing.reads.length, 1);
+  const stale = serviceFixture(), old = stale.service.fetchComments({ id: 'p1', userId: 'u1' });
+  stale.logout(); stale.reads[0].resolve('{"ok":1,"is_show_bulletin":1}');
+  await assert.rejects(old, /取消|更新/); assert.equal(stale.reads.length, 1);
 });
 
 test('reply sends actual selected comment ID and invalidates both cached orders', async () => {

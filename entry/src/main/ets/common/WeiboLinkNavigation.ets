@@ -50,9 +50,7 @@ export async function openWeiboLink(ui: UIContext, stack: NavPathStack, url: str
   } else if (target.kind === 'image') {
     // 图床直链在 App 内看图：交系统浏览器会被防盗链挡成 403（图床判定见 domain/WeiboLink）。
     openImagePreview(ui, [target.url], 0);
-  } else if (target.kind !== 'unsupported') {
-    openExternalUrl(ui, target.url);
   } else {
-    ui.getPromptAction().showToast({ message: '暂不支持此链接' });
+    openExternalUrl(ui, target.url);
   }
 }

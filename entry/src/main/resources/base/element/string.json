@@ -1,6 +1,18 @@
 {
   "string": [
     {
+      "name": "weibo_long_text_loading",
+      "value": "加载中…"
+    },
+    {
+      "name": "weibo_view_original",
+      "value": "查看微博原文"
+    },
+    {
+      "name": "weibo_view_repost_original",
+      "value": "查看转发原文"
+    },
+    {
       "name": "module_desc",
       "value": "微博客户端模块"
     },

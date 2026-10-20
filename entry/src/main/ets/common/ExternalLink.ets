@@ -20,7 +20,7 @@ export function openExternalUrl(uiContext: UIContext, url: string): void {
     uiContext.getPromptAction().showToast({ message: '链接打开失败，请稍后重试' });
     return;
   }
-  const want: Want = { uri: target, action: 'ohos.want.action.viewData', type: 'text/plain' };
+  const want: Want = { uri: target, action: 'ohos.want.action.viewData' };
   context.startAbility(want).catch((): void => {
     uiContext.getPromptAction().showToast({ message: '链接打开失败，请稍后重试' });
   });

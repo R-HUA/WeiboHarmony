@@ -41,3 +41,10 @@ test('redundant video links disappear only with a playable video; other links re
  assert.equal(visible.filter(s=>s.kind===RichKind.Link).length,1);
  assert.equal(visible.find(s=>s.kind===RichKind.Link).text,'网页链接');
 });
+test('application and relative anchors retain their destinations for link resolution',()=>{
+ for(const target of ['sinaweibo://browser?url=https%3A%2F%2Fwx1.sinaimg.cn%2Flarge%2Fa.jpg','detail/123','mailto:someone@example.com']){
+  const parts=parseWeiboRich(`<a href="${target}">查看图片</a>`);
+  assert.equal(parts[0].kind,RichKind.Link);assert.equal(parts[0].target,target);
+ }
+ assert.equal(parseWeiboRich('<a href="javascript:alert(1)">文字</a>')[0].kind,RichKind.Text);
+});

@@ -84,6 +84,7 @@ export struct WeiboPostDetail {
   @State private longTextRaw: string = '';
   /** 转发原文的全文（HTML）。转发也可能是长文。 */
   @State private repostLongTextRaw: string = '';
+  @State private longTextLoading: boolean = true;
   @State commentDraft: string = '';
   @State commentSending: boolean = false;
   @State accountAvatarUrl: string = '';
@@ -147,14 +148,11 @@ export struct WeiboPostDetail {
       this.post = cached;
       this.loading = false;
       this.presentPostContent();
-      await this.prepareGestureSharePreview();
-      await this.loadComments();
-      await this.loadLongTextIfNeeded();
+      await Promise.all([this.prepareGestureSharePreview(), this.loadComments(), this.loadLongTextIfNeeded()]);
       this.finishCommentEntrance();
       return;
     }
     await this.loadPost();
-    await this.loadLongTextIfNeeded();
     this.finishCommentEntrance();
   }
 
@@ -217,20 +215,27 @@ export struct WeiboPostDetail {
     const repostId: string = repost !== null && repost.isLongText === true ? repost.id : '';
     this.longTextRaw = '';
     this.repostLongTextRaw = '';
+    this.longTextLoading = mainId.length > 0 || repostId.length > 0;
     if (mainId.length === 0 && repostId.length === 0) {
       return;
     }
     const revision: number = this.viewRevision;
     const session: number = WeiboAuthManager.getInstance().getGeneration();
-    if (mainId.length > 0) {
-      const html: string = await WeiboService.getInstance().fetchLongText(mainId);
-      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
-      this.longTextRaw = html;
-    }
-    if (repostId.length > 0) {
-      const html: string = await WeiboService.getInstance().fetchLongText(repostId);
-      if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
-      this.repostLongTextRaw = html;
+    try {
+      if (mainId.length > 0) {
+        const html: string = await WeiboService.getInstance().fetchLongText(mainId);
+        if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+        this.longTextRaw = html;
+      }
+      if (repostId.length > 0) {
+        const html: string = await WeiboService.getInstance().fetchLongText(repostId);
+        if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
+        this.repostLongTextRaw = html;
+      }
+    } finally {
+      if (revision === this.viewRevision && session === WeiboAuthManager.getInstance().getGeneration()) {
+        this.longTextLoading = false;
+      }
     }
   }
 
@@ -247,8 +252,7 @@ export struct WeiboPostDetail {
       if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.post = post;
       this.presentPostContent();
-      await this.prepareGestureSharePreview();
-      await this.loadComments();
+      await Promise.all([this.prepareGestureSharePreview(), this.loadComments(), this.loadLongTextIfNeeded()]);
     } catch (error) {
       if (revision !== this.viewRevision || session !== WeiboAuthManager.getInstance().getGeneration()) { return; }
       this.errorMessage = (error as Error).message ?? '帖子详情加载失败，请稍后重试';
@@ -827,7 +831,11 @@ export struct WeiboPostDetail {
       })
         .width('100%')
       if (repost.isLongText === true && this.repostLongTextRaw.length === 0) {
-        Button('查看转发原文').onClick((): void => { this.openRepost(repost); }, 8)
+        if (this.longTextLoading) {
+          this.LoadingText($r('app.string.weibo_long_text_loading'))
+        } else {
+          this.TextAction($r('app.string.weibo_view_repost_original'), (): void => { this.openRepost(repost); })
+        }
       }
       if (repost.pictures.length > 0 || repost.videoUrl.length > 0) {
         MixedMediaTiles({
@@ -843,6 +851,27 @@ export struct WeiboPostDetail {
     .backgroundColor(Theme.bgSurface(this.isDark))
     .borderRadius(Radius.md)
     .onClick((): void => { this.openRepost(repost); }, 8)
+  }
+
+  @Builder
+  TextAction(label: ResourceStr, action: () => void) {
+    Button(label, { type: ButtonType.Normal })
+      .fontSize(fs(14, this.fontScale))
+      .fontWeight(FontWeight.Medium)
+      .fontColor(Theme.brand())
+      .backgroundColor(Color.Transparent)
+      .height(36)
+      .padding({ left: Spacing.md, right: Spacing.md })
+      .borderRadius(Radius.sm)
+      .onClick(action, 8)
+  }
+
+  @Builder
+  LoadingText(label: ResourceStr) {
+    Row({ space: Spacing.sm }) {
+      LoadingProgress().width(18).height(18)
+      Text(label).fontSize(fs(13, this.fontScale)).fontColor(Theme.textSecondary(this.isDark))
+    }
   }
 
   @Builder
@@ -895,7 +924,13 @@ export struct WeiboPostDetail {
       })
         .width('100%')
       if (currentPost.isLongText === true && this.longTextRaw.length === 0) {
-        Button('查看微博原文').onClick((): void => { openExternalUrl(this.getUIContext(), this.postShareUrl(currentPost)); }, 8)
+        if (this.longTextLoading) {
+          this.LoadingText($r('app.string.weibo_long_text_loading'))
+        } else {
+          this.TextAction($r('app.string.weibo_view_original'), (): void => {
+            openExternalUrl(this.getUIContext(), this.postShareUrl(currentPost));
+          })
+        }
       }
       // 图文混排帖（同时有图有视频）走「等宽正方形并排」，与信息流卡片同一套几何。
       if (this.useMixedMediaLayout(currentPost)) {
@@ -1014,71 +1049,74 @@ export struct WeiboPostDetail {
         }
       }
       .width('100%')
-      if (this.interactionTab !== 'comments') {
-        ForEach(this.interactions, (item: WeiboInteraction): void => { this.InteractionRow(item); },
-          (item: WeiboInteraction): string => item.id)
-        if (this.interactionsLoading) {
-          LoadingProgress().width(18).height(18).margin({ top: 8 })
-        } else if (this.interactionsError.length > 0) {
-          Text(this.interactionsError).fontSize(fs(13, this.fontScale)).fontColor(Theme.danger())
-          Button($r('app.string.weibo_retry'))
-            .onClick((): void => { this.loadInteractions(this.interactionPage > 1); })
-        } else if (this.interactions.length === 0) {
-          Text(this.interactionTab === 'reposts' ? $r('app.string.weibo_no_reposts') : $r('app.string.weibo_no_likes'))
-            .fontSize(fs(13, this.fontScale)).fontColor(Theme.textSecondary(this.isDark)).margin({ top: 8 })
-        }
-        if (this.interactionsHasMore && !this.interactionsLoading && this.interactionsError.length === 0) {
-          Row().width('100%').height(1)
-            .onVisibleAreaChange([0], (visible: boolean): void => { if (visible) { this.loadMoreInteractions(); } })
-        }
-      } else {
-        if (this.commentsStore.loading && this.commentsStore.items.length === 0) {
-          Row({ space: Spacing.sm }) {
-            LoadingProgress().width(18).height(18)
-            Text($r('app.string.weibo_comments_loading'))
-              .fontSize(fs(13, this.fontScale))
-              .fontColor(Theme.textSecondary(this.isDark))
-          }
-        } else if (this.commentsStore.loaded && this.commentsStore.items.length === 0 && this.commentsStore.errorMessage.length === 0) {
-          Text($r('app.string.weibo_no_comments'))
-            .fontSize(fs(13, this.fontScale))
-            .fontColor(Theme.textSecondary(this.isDark))
-        }
-        if (this.post !== null) {
-          ForEach(this.commentsStore.items, (comment: WeiboComment): void => {
-            WeiboCommentThread({
-              comment: comment, post: this.post!, isDark: this.isDark, fontScale: this.fontScale,
-              sending: this.commentSending, refreshRootId: this.replyRefreshRootId, refreshTick: this.replyRefreshTick,
-              onReply: (item: WeiboComment): void => { this.selectReply(item); },
-              onRepost: (item: WeiboComment): void => { this.selectRepost(item); },
-              onCopy: (item: WeiboComment): void => { this.copyComment(item); },
-              onMention: (uid: string, name: string): void => { this.openMention(uid, name); },
-              onTopic: (topic: string): void => { this.openTopic(topic); },
-              onLink: (url: string, label: string): void => { this.openLink(url, label); },
-            })
-          }, (comment: WeiboComment): string => comment.id)
-        }
-        if (this.commentsStore.errorMessage.length > 0) {
-          Text(this.commentsStore.errorMessage).fontColor(Theme.danger()).fontSize(fs(13, this.fontScale))
-          Button($r('app.string.weibo_retry'))
-            .onClick((): void => { this.loadComments(this.commentsStore.items.length > 0 && this.commentsStore.nextCursor !== null); })
-        } else if (this.commentsStore.nextCursor !== null) {
-          if (this.commentsStore.loading) {
+      Column() {
+        if (this.interactionTab !== 'comments') {
+          ForEach(this.interactions, (item: WeiboInteraction): void => { this.InteractionRow(item); },
+            (item: WeiboInteraction): string => item.id)
+          if (this.interactionsLoading) {
             LoadingProgress().width(18).height(18).margin({ top: 8 })
-          } else {
+          } else if (this.interactionsError.length > 0) {
+            Text(this.interactionsError).fontSize(fs(13, this.fontScale))
+              .fontColor(Theme.textSecondary(this.isDark)).textAlign(TextAlign.Center).margin({ bottom: Spacing.sm })
+            this.TextAction($r('app.string.weibo_retry'), (): void => { this.loadInteractions(this.interactionPage > 1); })
+          } else if (this.interactions.length === 0) {
+            Text(this.interactionTab === 'reposts' ? $r('app.string.weibo_no_reposts') : $r('app.string.weibo_no_likes'))
+              .fontSize(fs(13, this.fontScale)).fontColor(Theme.textSecondary(this.isDark)).margin({ top: 8 })
+          }
+          if (this.interactionsHasMore && !this.interactionsLoading && this.interactionsError.length === 0) {
             Row().width('100%').height(1)
               .onVisibleAreaChange([0], (visible: boolean): void => { if (visible) { this.loadMoreInteractions(); } })
           }
+        } else {
+          if (this.commentsStore.loading && this.commentsStore.items.length === 0) {
+            this.LoadingText($r('app.string.weibo_comments_loading'))
+          } else if (this.commentsStore.loaded && this.commentsStore.items.length === 0 && this.commentsStore.errorMessage.length === 0) {
+            Text($r('app.string.weibo_no_comments'))
+              .fontSize(fs(13, this.fontScale))
+              .fontColor(Theme.textSecondary(this.isDark))
+          }
+          if (this.post !== null) {
+            ForEach(this.commentsStore.items, (comment: WeiboComment): void => {
+              WeiboCommentThread({
+                comment: comment, post: this.post!, isDark: this.isDark, fontScale: this.fontScale,
+                sending: this.commentSending, refreshRootId: this.replyRefreshRootId, refreshTick: this.replyRefreshTick,
+                onReply: (item: WeiboComment): void => { this.selectReply(item); },
+                onRepost: (item: WeiboComment): void => { this.selectRepost(item); },
+                onCopy: (item: WeiboComment): void => { this.copyComment(item); },
+                onMention: (uid: string, name: string): void => { this.openMention(uid, name); },
+                onTopic: (topic: string): void => { this.openTopic(topic); },
+                onLink: (url: string, label: string): void => { this.openLink(url, label); },
+              })
+            }, (comment: WeiboComment): string => comment.id)
+          }
+          if (this.commentsStore.errorMessage.length > 0) {
+            Text(this.commentsStore.errorMessage).fontColor(Theme.textSecondary(this.isDark))
+              .fontSize(fs(13, this.fontScale)).textAlign(TextAlign.Center).margin({ bottom: Spacing.sm })
+            this.TextAction($r('app.string.weibo_retry'), (): void => {
+              this.loadComments(this.commentsStore.items.length > 0 && this.commentsStore.nextCursor !== null);
+            })
+          } else if (this.commentsStore.nextCursor !== null) {
+            if (this.commentsStore.loading) {
+              LoadingProgress().width(18).height(18).margin({ top: 8 })
+            } else {
+              Row().width('100%').height(1)
+                .onVisibleAreaChange([0], (visible: boolean): void => { if (visible) { this.loadMoreInteractions(); } })
+            }
+          }
         }
       }
+      .width('100%')
+      .padding({ top: Spacing.lg, bottom: Spacing.lg })
+      .constraintSize({ minHeight: Math.max(160, this.detailViewportHeight - this.statusBarHeight - 64
+        - this.navigationIndicatorHeight - 92 - Spacing.lg - 44) })
+      .justifyContent((this.interactionTab === 'comments' ? this.commentsStore.items.length : this.interactions.length) > 0
+        ? FlexAlign.Start : FlexAlign.Center)
     }
     .width('100%')
     .padding(Spacing.lg)
     .backgroundColor(Theme.bgCard(this.isDark))
     .borderRadius(Radius.postCard)
     .margin({ top: Spacing.md })
-    .constraintSize({ minHeight: Math.max(0, this.detailViewportHeight - this.statusBarHeight - 64
-      - this.navigationIndicatorHeight - 92 + Spacing.lg) })
     .onAreaChange((_oldValue: Area, newValue: Area): void => {
       this.commentsOffset = Number(newValue.position.y) + Spacing.lg;
       this.commentsAreaReady = true;
@@ -1315,9 +1353,7 @@ export struct WeiboPostDetail {
                 .fontSize(fs(14, this.fontScale))
                 .fontColor(Theme.danger())
                 .textAlign(TextAlign.Center)
-              Button($r('app.string.weibo_load'))
-                .fontSize(fs(14, this.fontScale))
-                .onClick(() => { this.loadPost(); })
+              this.TextAction($r('app.string.weibo_retry'), (): void => { this.loadPost(); })
             }
             .width('100%')
             .alignItems(HorizontalAlign.Center)

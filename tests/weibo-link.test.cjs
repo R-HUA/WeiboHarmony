@@ -19,7 +19,7 @@ test('video page needs explicit post metadata; fid is not a post ID',()=>{
 });
 function resolver(responses){let closed=false;const requests=[];
  const api={createSession:()=>({fetch:async request=>{requests.push(request);return responses.shift()},close:()=>closed=true}),Request:class {constructor(url,method){this.url=url;this.method=method}}};
- const {resolveWeiboLink}=load('entry/src/main/ets/service/WeiboLinkResolver.ets',{'@kit.RemoteCommunicationKit':{rcp:api},'../domain/WeiboLink':domain});
+ const {resolveWeiboLink}=load('entry/src/main/ets/service/WeiboLinkResolver.ets',{'@kit.RemoteCommunicationKit':{rcp:api},'@kit.PerformanceAnalysisKit':{hilog:{warn(){}}},'../domain/WeiboLink':domain});
  return {resolveWeiboLink,requests,closed:()=>closed};
 }
 test('shortlink redirects to native post without fetching it or adding cookies',async()=>{
@@ -95,4 +95,27 @@ test('a transition page picture never hijacks the redirect to the real landing p
  const bare=resolver([{statusCode:200,headers:{},toString:async()=>transition},
   {statusCode:200,headers:{},toString:async()=>'<html>final</html>'}]);
  assert.equal((await bare.resolveWeiboLink('https://t.cn/transition',true)).kind,'post');
+});
+
+test('encoded and wrapped image links resolve before native classification; other protocols reach the system',()=>{
+ const picture='https://wx3.sinaimg.cn/large/abc.jpg';
+ for(const url of [encodeURIComponent(picture),'sinaweibo://browser?url='+encodeURIComponent(picture),
+  'https://weibo.cn/sinaurl?u='+encodeURIComponent(picture)])assert.equal(p(url).url,picture);
+ assert.equal(p('sinaweibo://detail?mblogid=Ab123').id,'Ab123');
+ assert.equal(p('sinaweibo://userinfo?uid=123').id,'123');
+ assert.equal(p('mailto:someone@example.com').kind,'external');
+ assert.equal(p('detail/123').kind,'post');
+ assert.equal(p('weibo.com/123/Ab123').kind,'post');
+});
+test('photo pages parse their image and keep the web address when access fails',async()=>{
+ const url='https://photo.weibo.com/123/wbphotos/large/mid/456/pid/abc';
+ const f=resolver([{statusCode:200,headers:{},toString:async()=>'<meta property="og:image" content="https://wx1.sinaimg.cn/large/abc.jpg">'}]);
+ assert.equal((await f.resolveWeiboLink(url)).kind,'image');
+ const redirect=resolver([{statusCode:302,headers:{location:url}},
+  {statusCode:200,headers:{},toString:async()=>'<meta property="og:image" content="https://wx1.sinaimg.cn/large/abc.jpg">'}]);
+ assert.equal((await redirect.resolveWeiboLink('https://t.cn/photo')).kind,'image');
+ const failed=resolver([{statusCode:403,headers:{}}]);
+ assert.equal((await failed.resolveWeiboLink(url)).url,url);
+ const html='<meta property="og:image" content="https://example.com/logo.png">'+"$CONFIG['page_pic']='https://wx1.sinaimg.cn/large/abc.jpg'";
+ assert.equal(imageFromWeiboPage(html),'https://wx1.sinaimg.cn/large/abc.jpg');
 });

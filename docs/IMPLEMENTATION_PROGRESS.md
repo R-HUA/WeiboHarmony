@@ -121,6 +121,46 @@
 - 最新点击覆盖旧解析，退出会话或导航路径改变后丢弃迟到结果。解析仅由点击触发。
 - 验证：离线链接分类/解析样本测试和 API26 构建；真实微博短链、视频网页随服务端变化的解析效果仍需真机验收。
 
+## 2026-09-29 图片链接与热搜交互
+
+- 正文里的图片链接改为 App 内查看：`domain/WeiboLink` 增加图床判定（`sinaimg.cn` / `sinaimg.com` / `weibocdn.com` / `sinacdn.cn` 及其子域，且路径是图片扩展名或图床尺寸别名目录），命中即归为 `image`；`common/WeiboLinkNavigation` 把它交给 `pages/ImagePreview`（信息流点图同一个原图浏览页，缩放/切换/保存能力都在里面）。此前这类地址交系统浏览器，图床防盗链直接返回 403。
+- 第二条信号：锚点文字。部分接口版本不把图床地址写进 href，只给「查看图片」这类文字锚点。`isImageViewText` 按展示文案判定（查看图片/查看原图/查看大图等，允许「共9张图 查看图片」这种前后缀），`openWeiboLink` 新增第二参数承接锚点文字；解析器只在要图时多请求一次落地页，用 `og:image`（`$CONFIG['page_pic']` 兜底）取配图，取不到仍回落到原本的帖子详情/外站行为。`post` 类型平时不打开落地页，只有带文字信号时才多这一次请求。
+- 微博热搜词条可点：`WeiboHotSearch` 增加 `onOpenTopic`，`Index` 注入既有 `openTopicSearch`——切到搜索页并直接检索该词，与正文 `#话题#` 同一条路径（`weiboSearchQuery` + 自增 tick）。关键词优先取接口给的 `word_scheme`（`WeiboHotTopic.query`），缺失时退回展示词。
+- 安全边界不变：白名单之外的 `.jpg` 仍是外站（交系统浏览器），外站 `og:image` 不被采纳；锚点文字只决定是否多取一次落地页配图，不参与域名信任判定。
+- 验证：离线测试新增图床判定、文字判定、`og:image` 提取与解析器分流用例；API 26 assembleHap 构建通过。真机待核对：带图转发帖的「查看图片」、纯图床直链、热搜词条点击后的搜索结果。
+
+## 2026-09-29 关注/取关写接口 403 治理
+
+- 现象：他人主页的关注/取关总提示「微博拒绝了本次访问」（HTTP 403）。点赞与评论走同一套写链路，同样受影响，只是本轮由关注暴露。
+- 依据（第三方第一手接口调查，不是微博官方稳定承诺）：
+  - openweb 的 weibo 记录指出 `/ajax/*` 写接口只在浏览器页面上下文里被 CSRF 接受，`Origin: https://weibo.com` 与 `Referer` 需要「自然带上」；纯 Node 传输一律 403。
+  - weiboSyncFollow 记录「新版关注接口 `https://www.weibo.com/ajax/friendships/create` 请求头必须带 xsrf token，否则报 403」；rainpenber/weiboBatchFollow 给出可用的旧接口 `POST /aj/f/followed`（带完整 `refer_*` 参数、不需要令牌）。
+  - 路径与参数沿用既有记录：关注 `create` + `friend_uid`，取关 `destory` + `uid`（上游拼写）。
+- 修复：
+  1. 补 `Origin`：`WeiboHttpClient` 移动端与桌面端请求头都加上同源 `Origin`（此前只有 `Referer`）。真实浏览器的同源 POST 一定带它，微博的 CSRF 校验认它。
+  2. 响应 Cookie 回流：`WeiboHttpClient` 每次响应（含失败响应）把 `Set-Cookie` 交给 `WeiboAuthManager`，按域合并进 mobile / desktop 两份 Cookie，落盘 30 秒节流。此前只保存登录时的一次快照，而微博的 `XSRF-TOKEN` 随响应轮换——快照过期后，写接口的「Cookie 值 == 请求头 X-XSRF-TOKEN」双提交校验必然失败。这正是 `CODE_REVIEW_2026-09-29.md` 中「客户端没有响应 Set-Cookie 的更新流程」那条待验证边界。
+  3. 403 重试一次：`WeiboService.postAuthenticatedWrite`（关注/取关/点赞/评论共用）遇 HTTP 403 时用最新 Cookie 原样重发一次——这次 403 的响应通常已换发新令牌。只有 HTTP 层 403 才重试；`ok:0` 业务错误（需要验证码、次数超限）直接上抛，不重复请求以免加重风控。
+- 边界：Cookie 只接受 `m.weibo.cn` 与 `weibo.com` 两个来源域，外站 `Set-Cookie` 丢弃；合并只处理 `name=value`，不实现属性里的删除语义（服务端换发都是新值，删掉旧值更危险）。RCP 自带的 `CookieRepository`（API 23+，本机 API 26 可用）可作为后续替代实现，本次未引入。
+- 验证：离线测试新增 403 重试、非 403 不重试、连续 403 止步两次、跨域 Cookie 不串、属性不入表等用例；API 26 assembleHap 构建通过。真机需用真实账号手动关注/取关一次确认（会真实改变关注关系）。
+- 若真机仍为 403，下一批候选（按证据强度）：`client-version` 请求头、浏览器 `Sec-Fetch-*` 三件套，或把写请求放进已登录的 ArkWeb 页面上下文执行；届时先记录状态码与响应体再决定，不做盲目重试。
+
+## 2026-09-29 评审四条（P1×1 / P2×1 / P3×2）整改
+
+上一节「Cookie 回流 + Origin」引入的改动被评审挑出四处，逐条处理。
+
+1. **P1 未登录不再合并、也不再落盘响应 Cookie。** `WeiboAuthManager.mergeResponseCookies` 开头加 `if (this.session.uid.length === 0) { return; }`，`persistRefreshedCookies` 同样加一道（写盘是唯一持久化入口，做双保险）。
+   - 理由：`m.weibo.cn/api/config`、热搜这类公开接口在访客态也会返回 `Set-Cookie`（匿名 `ti`、访客 `SUB`）。此前无差别合并会把它们当成登录态加密写进 HUKS 凭据文件，`hasCookie()` 为 false 但磁盘上躺着脏数据。登录的真实来源是 `captureAndValidate` 里从 `WebCookieManager` 取的那份快照（是网页自己请求后的结果，比我们旁路合并的更权威），所以登录期间丢掉响应 Cookie 没有损失。
+   - 顺带堵住第二个洞：退出登录后迟到的响应此前会往已经清空的会话里塞 Cookie，并在 `vault.clear()` 之后又写一次盘；现在被同一道闸门挡掉。
+2. **P2 短链中转页重定向优先于配图提取。** `WeiboLinkResolver` 把 `shortlinkPageRedirect(html)` 的判断整体移到 `imageFromWeiboPage(html)` 之前。
+   - 理由：`meta refresh` 过渡页自己也有 `og:image`（站方 logo、商品图、分享卡片图），先取图会把「查看图片」的意图钉死在中转页上，永远走不到真正的正文。现在的顺序是：先判是否还要跳（跳了就 continue 去取下一跳），确认是落地页之后才取 `og:image`，取不到仍回落到 `post` / `external`。
+3. **P3 `Origin` 只给写请求。** 从 `buildMobileHeaders` / `buildDesktopHeaders` 里摘掉 `Origin`，改在 `performPost` 里按目标域补上。
+   - 理由：同源 GET 本来就不发 `Origin`，凭空多一个自定义头只会扩大与线上浏览器的差异，而微博对异常头部组合的容错不可预期。写请求（POST）带 `Origin` 是上一节 403 治理的核心依据，保留。
+4. **P3 `set-cookie` 大小写兜底。** `absorbResponseCookies` 先读 `headers['set-cookie']`，取不到再读 `headers['Set-Cookie']`。
+   - 理由：HTTP/1.1 头名字大小写不敏感，RCP 内部用哪种大小写没有承诺（历史版本两种都出现过）。漏读一次就是漏掉一次令牌轮换，后续写请求会被判 403。
+
+- 验证：新增 `tests/http-client.test.cjs`（用假 `rcp.Session` 记录真实发出去的头）锁定第 3、4 条——GET 不带 `Origin` 且保留 `Referer`、POST 带 `Origin` 与 `X-XSRF-TOKEN`、两种大小写都能收到刷新令牌、403 响应仍交出令牌并报 403、两个微博域之外的地址在开 socket 前就拒绝；`tests/auth.test.cjs` 增加「未登录不种访客 Cookie、不写盘，退出后迟到 Cookie 不复活」；`tests/weibo-link.test.cjs` 增加「过渡页配图不得劫持重定向」。全部 98 项离线测试通过，API 26 `assembleHap --no-daemon` 构建成功（`BUILD SUCCESSFUL in 21 s 889 ms`），产物 `entry/build/default/outputs/default/entry-default-signed.hap`。
+- 未做：真机验收。三条用户可见行为（真实账号关注/取关、「查看图片」内联预览、热搜词条点击进搜索）仍需装包确认；离线替身不证明微博线上接口可用。
+
 ## 2026-10-14 评论、分类榜单与媒体混排
 
 - 评论读取使用桌面站 `/ajax/statuses/buildComments`，主评论与根评论子回复各自维护游标；热门/最新采用上游排序参数，详情和展开回复支持滚动续载、失败重试及会话切换取消。评论发送、评论回复和评论转发均已有实现，真实账号验收仍待完成。

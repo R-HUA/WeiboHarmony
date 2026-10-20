@@ -327,13 +327,24 @@ export class WeiboService {
   private async fetchCommentsPage(post: WeiboPost, rootId: string, param: string,
     cursor: WeiboCommentCursor | null): Promise<WeiboCommentsPage> {
     const child: boolean = rootId.length > 0;
-    let url: string = `https://weibo.com/ajax/statuses/buildComments?is_reload=1&id=${encodeURIComponent(child ? rootId : post.id)}`
-      + `&is_mix=${child ? 1 : 0}&fetch_level=${child ? 1 : 0}&count=20&uid=${encodeURIComponent(post.userId)}&locale=zh-CN`;
-    if (child || post.commentBulletinMode !== undefined) {
-      url += `&is_show_bulletin=${child ? 2 : post.commentBulletinMode}`;
+    const auth: WeiboAuthManager = WeiboAuthManager.getInstance();
+    const generation: number = auth.getGeneration();
+    const cookie: string = auth.getDesktopCookie();
+    // 推荐流来自移动站，缺少桌面评论所需的精选模式时，按原帖详情补齐。
+    if (!child && post.commentBulletinMode === undefined) {
+      const detail: string = await WeiboHttpClient.getDesktop(
+        `https://weibo.com/ajax/statuses/show?id=${encodeURIComponent(post.id)}`, cookie);
+      this.parseResponse(detail);
+      const source: WeiboPostJson = JSON.parse(detail) as WeiboPostJson;
+      if (generation !== auth.getGeneration()) { throw new Error('请求已取消'); }
+      if (source.is_show_bulletin === undefined) { throw new Error('微博未返回评论模式，请稍后重试'); }
+      post.commentBulletinMode = source.is_show_bulletin;
     }
+    let url: string = `https://weibo.com/ajax/statuses/buildComments?is_reload=1&id=${encodeURIComponent(child ? rootId : post.id)}`
+      + `&is_mix=${child ? 1 : 0}&fetch_level=${child ? 1 : 0}&count=20&uid=${encodeURIComponent(post.userId)}&locale=zh-CN`
+      + `&is_show_bulletin=${child ? 2 : post.commentBulletinMode}&max_id=${encodeURIComponent(cursor?.maxId ?? '')}`;
+    if (!child) { url += '&type=feed'; }
     if (cursor !== null) {
-      url += `&max_id=${encodeURIComponent(cursor.maxId)}`;
       if (cursor.maxIdType) { url += `&max_id_type=${encodeURIComponent(cursor.maxIdType)}`; }
     }
     if (param) {
@@ -341,7 +352,7 @@ export class WeiboService {
       if (separator <= 0) { throw new Error('微博评论排序参数不完整'); }
       url += `&${encodeURIComponent(param.substring(0, separator))}=${encodeURIComponent(param.substring(separator + 1))}`;
     }
-    const raw: string = await WeiboHttpClient.getDesktop(url, WeiboAuthManager.getInstance().getDesktopCookie());
+    const raw: string = await WeiboHttpClient.getDesktop(url, cookie);
     this.parseResponse(raw);
     const result: WeiboCommentsPage = WeiboMapper.commentsPage(JSON.parse(raw) as WeiboBuildCommentsResponse, cursor, rootId);
     hilog.debug(0x0000, LOG_TAG, 'event=comments_loaded post=%{public}s root=%{public}s count=%{public}d', post.id, rootId, result.items.length);

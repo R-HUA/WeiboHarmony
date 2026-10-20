@@ -1,6 +1,18 @@
 {
   "string": [
     {
+      "name": "weibo_long_text_loading",
+      "value": "Loading…"
+    },
+    {
+      "name": "weibo_view_original",
+      "value": "View original post"
+    },
+    {
+      "name": "weibo_view_repost_original",
+      "value": "View original repost"
+    },
+    {
       "name": "module_desc",
       "value": "Weibo client module"
     },

@@ -208,7 +208,7 @@ function consumeSpecial(source: string, at: number, out: RichSegment[]): number 
       out.push({ kind: RichKind.Topic, text: inner, target: topicKeyword(inner), imageUrl: '' });
       return anchor[0].length;
     }
-    if (/^https?:/i.test(href) || href.startsWith('/')) {
+    if (!/^(?:javascript|data):/i.test(href)) {
       appendLink(out, inner, normaliseUrl(href));
       return anchor[0].length;
     }

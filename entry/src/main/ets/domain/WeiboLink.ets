@@ -55,35 +55,63 @@ export function isImageViewText(text: string): boolean {
  * 只接受图床地址：页面给的头像/logo 之类不会被当成用户要看的那张图。
  */
 export function imageFromWeiboPage(html: string): string {
-  let picture: string = '';
+  const pictures: string[] = [];
   const tag: RegExpExecArray | null = /<meta\b[^>]*property=["']og:image["'][^>]*>/i.exec(html);
   if (tag !== null) {
     const content: RegExpExecArray | null = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag[0]);
-    picture = content === null ? '' : content[1].trim();
+    if (content !== null) { pictures.push(content[1].trim()); }
   }
-  if (picture.length === 0) {
-    const config: RegExpExecArray | null = /\$CONFIG\[['"]page_pic['"]\]\s*=\s*['"]([^'"]+)['"]/.exec(html);
-    picture = config === null ? '' : config[1].trim();
+  const config: RegExpExecArray | null = /\$CONFIG\[['"]page_pic['"]\]\s*=\s*['"]([^'"]+)['"]/.exec(html);
+  if (config !== null) { pictures.push(config[1].trim()); }
+  for (let index: number = 0; index < pictures.length; index++) {
+    const target: WeiboLinkTarget = parseWeiboLink(pictures[index]);
+    if (target.kind === 'image') { return target.url; }
   }
-  if (picture.length === 0) { return ''; }
-  const target: WeiboLinkTarget = parseWeiboLink(picture);
-  return target.kind === 'image' ? target.url : '';
+  return '';
 }
 
+/** 先还原包裹地址，再分类，避免应用协议和编码后的图片链接被直接拒绝。 */
 export function parseWeiboLink(input: string): WeiboLinkTarget {
   let url: string = input.trim().replace(/&amp;/g, '&');
+  for (let count: number = 0; count < 5; count++) {
+    if (/^(?:https?|sinaweibo)%3a/i.test(url)) { url = decodeLinkPart(url); continue; }
+    const app: RegExpExecArray | null = /^sinaweibo:\/\/([^/?#]+)/i.exec(url);
+    if (app !== null) {
+      if (app[1].toLowerCase() === 'detail') {
+        const id: string = linkQuery(url, 'mblogid');
+        if (/^[A-Za-z0-9]+$/.test(id)) { return { kind: 'post', id: id, url: `https://m.weibo.cn/detail/${id}` }; }
+      }
+      if (app[1].toLowerCase() === 'userinfo') {
+        const uid: string = linkQuery(url, 'uid');
+        if (/^\d+$/.test(uid)) { return { kind: 'user', id: uid, url: `https://weibo.com/u/${uid}` }; }
+      }
+      const wrapped: string = linkQuery(url, 'url');
+      if (wrapped.length > 0) { url = wrapped; continue; }
+    }
+    const wrapper: RegExpExecArray | null = /^https?:\/\/(?:(?:www|m)\.)?weibo\.(?:com|cn)\/(?:sinaurl|showpic)(?:\.php)?\?/i.exec(url);
+    if (wrapper !== null) {
+      const wrapped: string = linkQuery(url, 'u') || linkQuery(url, 'url');
+      if (wrapped.length > 0) { url = wrapped; continue; }
+    }
+    break;
+  }
+  if (url.length === 0 || /^(?:javascript|data):/i.test(url)) { return { kind: 'unsupported', id: '', url: '' }; }
   if (url.startsWith('//')) { url = 'https:' + url; }
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(url) && !url.startsWith('/')) {
+    url = /^[^/\s]+\.[^/\s]+(?:\/|$)/.test(url) ? 'https://' + url : 'https://m.weibo.cn/' + url;
+  }
   if (url.startsWith('/')) { url = 'https://m.weibo.cn' + url; }
   const match: RegExpExecArray | null = /^https?:\/\/([^/?#]+)([^?#]*)/i.exec(url);
-  if (match === null) { return { kind: 'unsupported', id: '', url: url }; }
+  if (match === null) { return { kind: 'external', id: '', url: url }; }
   const host: string = match[1].toLowerCase();
   const path: string = match[2].replace(/\/$/, '');
   // 图床直链先于站点白名单判定：它不在信任站点里，但必须在 App 内预览而非跳浏览器。
   if (isWeiboImage(host, path)) { return { kind: 'image', id: '', url: url.replace(/^http:/i, 'https:') }; }
-  const trusted: boolean = ['weibo.com', 'www.weibo.com', 'm.weibo.cn', 'weibo.cn', 'www.weibo.cn', 'video.weibo.com', 's.weibo.com', 't.cn'].includes(host);
+  const trusted: boolean = ['weibo.com', 'www.weibo.com', 'm.weibo.cn', 'weibo.cn', 'www.weibo.cn', 'video.weibo.com', 'photo.weibo.com', 's.weibo.com', 't.cn'].includes(host);
   if (!trusted) { return { kind: 'external', id: '', url: url }; }
   url = url.replace(/^http:/i, 'https:');
   if (host === 't.cn') { return { kind: 'short', id: '', url: url }; }
+  if (host === 'photo.weibo.com') { return { kind: 'photo', id: '', url: url }; }
   let found: RegExpExecArray | null = /^\/(?:status|detail)\/([A-Za-z0-9]+)$/.exec(path);
   if (found === null) { found = /^\/\d+\/([A-Za-z0-9]+)$/.exec(path); }
   if (found !== null) { return { kind: 'post', id: found[1], url: url }; }
